@@ -142,15 +142,24 @@ npm run dev
      - **Download Media**: Saves MP4/image directly to user's device via `chrome.downloads` (with fallback).
      - **Save to Reddit Account**: Dispatches authenticated `/api/save` (or `/api/unsave`) with `modhash` via the extension bridge.
 
+6. **Creator Profile Media Feeds (`u/author`)**:
+   - Clicking any creator's username (`u/author`) enters Creator Mode, streaming their submitted posts via `/user/{username}/submitted.json`.
+   - Displays a dedicated top banner with `u/author` and a "← Back to Feed" button to seamlessly return to your previous feed.
+   - Graceful handling for suspended, banned, deleted, or empty user profiles.
+7. **Centered Text-Only Post Cards**:
+   - Expanded the media classifier to parse text-only submissions (`r/AskReddit`, `r/tifu`, stories, etc.).
+   - Displays text posts in a frosted glass card centered vertically and horizontally with markdown rendering, readable typography, and vertical scrolling for long stories.
+   - Diagnostic badge: `[ 📝 Text Post ]`.
+8. **Top Sort Time-Range Filtering**:
+   - When sorting by "Top" (in Home, Subreddits, or Creator Profiles), an interactive time selector dropdown appears: *Today*, *This Week*, *This Month*, *This Year*, and *All Time*.
+
 ---
 
 ## 6. Next Steps / Future Roadmap
 
-1. **Creator Profile Video Feed (`u/author`)**:
-   - Clicking the author tag streams submitted media posts from `old.reddit.com/user/{username}/submitted.json` with error handling for private, suspended, or empty accounts.
-2. **Text-Only Posts (Centered Presentation)**:
-   - Centered card view for text-only submissions (`r/AskReddit`, `r/tifu`, stories) with typography styling and vertical scrolling.
-3. **Advanced Time Filtering for "Top" Sort**:
-   - Dropdown for Day, Week, Month, Year, All Time when "Top" sort is selected.
-4. **Android PWA Packaging**:
-   - Turn web app into installable PWA for Kiwi/Titanium browser.
+1. **In-App Comments Drawer**:
+   - Slide-up bottom sheet showing top Reddit comments without opening a new tab.
+2. **Media Filter Toggle**:
+   - Toggle in header to switch between "All Posts", "Videos Only", or "Text Only".
+3. **Android PWA Packaging**:
+   - Add web app manifest and service worker for standalone mobile PWA.

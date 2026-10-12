@@ -18,7 +18,8 @@ export class FeedController {
 
     // Feed filter parameters
     this.subreddit = "";
-    this.sort = "hot";
+    this.user = "";
+    this.sort = "best";
     this.timeFilter = "day";
 
     this.setupIntersectionObserver();
@@ -360,14 +361,17 @@ export class FeedController {
     } else if (item.mediaType === "image") {
       sourceLabel = `🖼️ Image`;
       sourceClass = "source-reddit";
+    } else if (item.isText || item.mediaType === "text") {
+      sourceLabel = `📝 Text Post`;
+      sourceClass = "source-text";
     } else {
       sourceLabel = `📹 Media`;
       sourceClass = "source-reddit";
     }
 
     // 2. Sound Indicator
-    if (item.mediaType === "image" || item.isGallery) {
-      soundLabel = ""; // No sound badge for images
+    if (item.mediaType === "image" || item.isGallery || item.isText) {
+      soundLabel = ""; // No sound badge for images or text posts
     } else if (item.hasAudio) {
       if (this.isMuted) {
         soundLabel = `🔇 Audio (Muted)`;
@@ -501,7 +505,8 @@ export class FeedController {
 
   async loadInitialFeed(filter = {}) {
     this.subreddit = filter.subreddit || "";
-    this.sort = filter.sort || "hot";
+    this.user = filter.user || "";
+    this.sort = filter.sort || (this.user ? "new" : (this.subreddit ? "hot" : "best"));
     this.timeFilter = filter.timeFilter || "day";
     this.after = null;
     this.items = [];
@@ -519,10 +524,12 @@ export class FeedController {
     this.onStatusUpdate({ isLoading: true });
 
     try {
-      this.onDebugLog(`Fetching Reddit feed (${this.subreddit || "home"}/${this.sort})...`);
+      const targetLabel = this.user ? `u/${this.user}` : (this.subreddit ? `r/${this.subreddit}` : "home");
+      this.onDebugLog(`Fetching Reddit feed (${targetLabel}/${this.sort})...`);
 
       const res = await fetchFeed({
         subreddit: this.subreddit,
+        user: this.user,
         sort: this.sort,
         t: this.timeFilter,
         after: this.after
@@ -539,8 +546,16 @@ export class FeedController {
 
       // Append ALL items immediately! Zero waiting, zero freeze!
       for (const item of res.items) {
-        // Only append item if valid media is present
-        if (item.videoUrl || item.embedUrl || item.imageUrl || (item.images && item.images.length > 0) || item.cachedVideoUrl || item.redgifsId) {
+        // Append item if valid video, embed, image, gallery, or text post
+        if (
+          item.videoUrl ||
+          item.embedUrl ||
+          item.imageUrl ||
+          (item.images && item.images.length > 0) ||
+          item.cachedVideoUrl ||
+          item.redgifsId ||
+          item.isText
+        ) {
           const el = this.appendItem(item);
           newEntries.push({ item, el });
         }
@@ -549,6 +564,10 @@ export class FeedController {
       this.onDebugLog(`Total loaded reels: ${this.items.length}`);
       if (this.items.length > 0) {
         this.onStatusUpdate({ clearError: true });
+      } else if (this.user && this.items.length === 0) {
+        this.onStatusUpdate({
+          error: `No public media posts found for <strong>u/${this.user}</strong>. The user may be deleted, suspended, or has no submitted posts.`
+        });
       }
 
       // Non-blocking background resolution for Redgifs
@@ -671,6 +690,19 @@ export class FeedController {
       mediaHtml = `
         <img class="media-element" src="${item.imageUrl}" loading="lazy" />
       `;
+    } else if (item.isText) {
+      mediaHtml = `
+        <div class="text-post-wrapper">
+          <div class="text-post-card">
+            <div class="text-post-meta">
+              <span class="subreddit-tag" data-sub="${item.subreddit}">${item.subredditPrefixed}</span>
+              <span class="author-tag" data-author="${item.author}">${item.authorPrefixed}</span>
+            </div>
+            <h2 class="text-post-title">${this.escapeHtml(item.title)}</h2>
+            ${item.selfText ? `<div class="text-post-body">${this.renderMarkdownText(item.selfText)}</div>` : ""}
+          </div>
+        </div>
+      `;
     } else if (item.thumbnailUrl) {
       mediaHtml = `
         <img class="media-element" src="${item.thumbnailUrl}" loading="lazy" />
@@ -683,7 +715,7 @@ export class FeedController {
       <div class="reel-debug-badge">
         ${this.getDiagnosticBadgeHtml(item)}
       </div>
-      <div class="media-wrapper">
+      <div class="media-wrapper ${item.isText ? "text-wrapper" : ""}">
         ${mediaHtml}
       </div>
 
@@ -720,14 +752,16 @@ export class FeedController {
         </a>
       </div>
 
-      <!-- Information Overlay -->
-      <div class="item-info-overlay">
-        <div class="author-subreddit-row">
-          <span class="subreddit-tag" data-sub="${item.subreddit}">${item.subredditPrefixed}</span>
-          <span class="author-tag">${item.authorPrefixed}</span>
+      <!-- Information Overlay (Visual media only, omitted for text posts) -->
+      ${!item.isText ? `
+        <div class="item-info-overlay">
+          <div class="author-subreddit-row">
+            <span class="subreddit-tag" data-sub="${item.subreddit}">${item.subredditPrefixed}</span>
+            <span class="author-tag" data-author="${item.author}">${item.authorPrefixed}</span>
+          </div>
+          <p class="post-title" title="Click to expand">${this.escapeHtml(item.title)}</p>
         </div>
-        <p class="post-title" title="Click to expand">${this.escapeHtml(item.title)}</p>
-      </div>
+      ` : ""}
 
       <!-- Interactive Video Scrubber -->
       ${item.videoUrl ? `
@@ -808,13 +842,28 @@ export class FeedController {
       this.wireScrubber(el, video);
     }
 
-    // Click subreddit tag to filter
-    subTag?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const sub = e.target.dataset.sub;
-      if (sub) {
-        this.onStatusUpdate({ changeSubreddit: sub });
-      }
+    // Click subreddit tags to filter
+    const subTags = el.querySelectorAll(".subreddit-tag");
+    subTags.forEach((tag) => {
+      tag.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const sub = tag.dataset.sub;
+        if (sub) {
+          this.onStatusUpdate({ changeSubreddit: sub });
+        }
+      });
+    });
+
+    // Click author tags to view creator profile
+    const authorTags = el.querySelectorAll(".author-tag");
+    authorTags.forEach((tag) => {
+      tag.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const author = tag.dataset.author || item.author;
+        if (author) {
+          this.onStatusUpdate({ viewAuthor: author });
+        }
+      });
     });
 
     // Expand title toggle
@@ -1068,6 +1117,20 @@ export class FeedController {
       isDragging = false;
       scrubberContainer.classList.remove("scrubbing");
     });
+  }
+
+  renderMarkdownText(text) {
+    if (!text) return "";
+    let clean = this.escapeHtml(text);
+    // Bold: **text**
+    clean = clean.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+    // Italic: *text*
+    clean = clean.replace(/\*(.*?)\*/g, "<em>$1</em>");
+    // Paragraph breaks
+    clean = clean.replace(/\n\n+/g, "</p><p>");
+    // Single line breaks
+    clean = clean.replace(/\n/g, "<br/>");
+    return `<p>${clean}</p>`;
   }
 
   escapeHtml(str) {

@@ -587,6 +587,13 @@ html, body {
   color: var(--text-secondary);
   font-weight: 600;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  cursor: pointer;
+  transition: color 0.15s ease, text-decoration 0.15s ease;
+}
+
+.author-tag:hover {
+  color: #ff6e40;
+  text-decoration: underline;
 }
 
 .post-title {
@@ -1009,4 +1016,138 @@ html, body {
 @keyframes modalSlideUp {
   from { transform: translateY(24px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
+}
+
+/* Creator Profile Indicator Banner */
+.creator-nav-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 69, 0, 0.2);
+  border: 1px solid rgba(255, 69, 0, 0.45);
+  padding: 4px 12px;
+  border-radius: 20px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: modalFadeIn 0.2s ease;
+}
+
+.creator-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  color: #ffffff;
+  font-size: 0.74rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.creator-back-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.creator-back-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.creator-name {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #ff6e40;
+  letter-spacing: -0.2px;
+}
+
+/* Centered Text-Only Post Styling */
+.text-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(circle at center, rgba(32, 32, 45, 0.65) 0%, rgba(0, 0, 0, 0.95) 100%);
+}
+
+.text-post-wrapper {
+  width: 100%;
+  max-width: 580px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.text-post-card {
+  width: 100%;
+  max-height: 72dvh;
+  background: rgba(22, 22, 28, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 24px;
+  padding: 26px 28px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  user-select: text;
+}
+
+.text-post-card::-webkit-scrollbar {
+  width: 4px;
+}
+.text-post-card::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
+.text-post-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.text-post-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #ffffff;
+  letter-spacing: -0.3px;
+  word-break: break-word;
+}
+
+.text-post-body {
+  font-size: 0.95rem;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.85);
+  word-break: break-word;
+}
+
+.text-post-body p {
+  margin-bottom: 12px;
+}
+.text-post-body p:last-child {
+  margin-bottom: 0;
+}
+.text-post-body strong {
+  color: #ffffff;
+  font-weight: 700;
+}
+.text-post-body em {
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.diag-pill.source-text {
+  border-color: rgba(168, 85, 247, 0.5);
+  color: #c084fc;
 }
