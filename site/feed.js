@@ -1,5 +1,5 @@
 import bridge from './bridge.js';
-import { fetchFeed } from './reddit.js';
+import { fetchFeed, isTargetJoined } from './reddit.js';
 import Hls from 'hls.js';
 
 const SEEN_STORAGE_KEY = "reelit_seen_posts_v1";
@@ -139,8 +139,9 @@ export class FeedController {
     if (this.currentIndex === index) return;
     this.currentIndex = index;
 
+    const isHomeFeed = !this.subreddit && !this.user;
     const currentItem = this.items[index];
-    if (currentItem && currentItem.id) {
+    if (isHomeFeed && currentItem && currentItem.id) {
       this.recordSeenItem(currentItem);
     }
 
@@ -580,36 +581,47 @@ export class FeedController {
         item.isText
       );
 
-      let allCandidates = res.items.filter(isMediaItem);
-      let freshCandidates = allCandidates.filter((item) => !this.seenPostIds.has(item.id));
+      const allCandidates = res.items.filter(isMediaItem);
+      const isHomeFeed = !this.subreddit && !this.user;
+      let itemsToRender = [];
 
-      // Auto-paginate up to 3 batches if seen filter leaves fewer than 15 items
-      let pagePulls = 0;
-      while (freshCandidates.length < 15 && currentAfter && pagePulls < 3) {
-        pagePulls++;
-        this.onDebugLog(`Filtered ${allCandidates.length - freshCandidates.length} seen posts. Auto-fetching page ${pagePulls + 1}...`);
-        const nextRes = await fetchFeed({
-          subreddit: this.subreddit,
-          user: this.user,
-          sort: this.sort,
-          t: this.timeFilter,
-          after: currentAfter
-        });
-        currentAfter = nextRes.after;
-        this.after = currentAfter;
-        if (!currentAfter) {
-          this.hasMore = false;
+      if (isHomeFeed) {
+        // Home Feed Freshness: Filter out seen posts and auto-paginate if needed
+        let freshCandidates = allCandidates.filter((item) => !this.seenPostIds.has(item.id));
+
+        let pagePulls = 0;
+        while (freshCandidates.length < 15 && currentAfter && pagePulls < 3) {
+          pagePulls++;
+          this.onDebugLog(`Filtered ${allCandidates.length - freshCandidates.length} seen posts. Auto-fetching page ${pagePulls + 1}...`);
+          const nextRes = await fetchFeed({
+            subreddit: this.subreddit,
+            user: this.user,
+            sort: this.sort,
+            t: this.timeFilter,
+            after: currentAfter
+          });
+          currentAfter = nextRes.after;
+          this.after = currentAfter;
+          if (!currentAfter) {
+            this.hasMore = false;
+          }
+          const nextMedia = nextRes.items.filter(isMediaItem);
+          allCandidates.push(...nextMedia);
+          const nextFresh = nextMedia.filter((item) => !this.seenPostIds.has(item.id));
+          freshCandidates.push(...nextFresh);
         }
-        const nextMedia = nextRes.items.filter(isMediaItem);
-        allCandidates.push(...nextMedia);
-        const nextFresh = nextMedia.filter((item) => !this.seenPostIds.has(item.id));
-        freshCandidates.push(...nextFresh);
-      }
 
-      // If user has viewed all available posts, fallback to allCandidates so feed is never blank
-      const itemsToRender = freshCandidates.length > 0 ? freshCandidates : allCandidates;
-      if (freshCandidates.length === 0 && allCandidates.length > 0) {
-        this.onStatusUpdate({ toast: "Caught up on all new reels! Showing latest." });
+        // If user has viewed all available posts, fallback to allCandidates so feed is never blank
+        itemsToRender = freshCandidates.length > 0 ? freshCandidates : allCandidates;
+        if (freshCandidates.length === 0 && allCandidates.length > 0) {
+          this.onStatusUpdate({ toast: "Caught up on all new reels! Showing latest." });
+        }
+        this.onDebugLog(`Total loaded reels: ${itemsToRender.length} (${freshCandidates.length} fresh unseen)`);
+      } else {
+        // Subreddit feed or Creator Profile:
+        // Do NOT remove seen posts! Feed remains identical to Reddit (Top, Hot, New, Rising)
+        itemsToRender = allCandidates;
+        this.onDebugLog(`Total loaded subreddit/creator reels: ${itemsToRender.length}`);
       }
 
       const newEntries = [];
@@ -618,7 +630,6 @@ export class FeedController {
         newEntries.push({ item, el });
       }
 
-      this.onDebugLog(`Total loaded reels: ${this.items.length} (${freshCandidates.length} fresh unseen)`);
       if (this.items.length > 0) {
         this.onStatusUpdate({ clearError: true });
       } else if (this.user && this.items.length === 0) {
@@ -699,6 +710,9 @@ export class FeedController {
     const index = this.items.length;
     this.items.push(item);
 
+    const isSubredditMode = Boolean(this.subreddit);
+    const isSubJoined = isTargetJoined(item.subreddit, "sub");
+
     const el = document.createElement("div");
     el.className = "feed-item";
     el.dataset.index = index;
@@ -752,8 +766,17 @@ export class FeedController {
         <div class="text-post-wrapper">
           <div class="text-post-card">
             <div class="text-post-meta">
-              <span class="subreddit-tag" data-sub="${item.subreddit}">${item.subredditPrefixed}</span>
-              <span class="author-tag" data-author="${item.author}">${item.authorPrefixed}</span>
+              <div class="tag-group">
+                <span class="subreddit-tag" data-sub="${item.subreddit}">${item.subredditPrefixed}</span>
+                ${isSubredditMode ? `
+                  <button class="join-btn sub-join-btn ${isSubJoined ? "joined" : ""}" data-target="${item.subreddit}" data-type="sub" type="button" title="${isSubJoined ? "Leave community" : "Join community"}">${isSubJoined ? "Joined ✓" : "+ Join"}</button>
+                ` : ""}
+              </div>
+              ${item.author && item.author !== "[deleted]" ? `
+                <div class="tag-group">
+                  <span class="author-tag" data-author="${item.author}">${item.authorPrefixed}</span>
+                </div>
+              ` : ""}
             </div>
             <h2 class="text-post-title">${this.escapeHtml(item.title)}</h2>
             ${item.selfText ? `<div class="text-post-body">${this.renderMarkdownText(item.selfText)}</div>` : ""}
@@ -813,8 +836,17 @@ export class FeedController {
       ${!item.isText ? `
         <div class="item-info-overlay">
           <div class="author-subreddit-row">
-            <span class="subreddit-tag" data-sub="${item.subreddit}">${item.subredditPrefixed}</span>
-            <span class="author-tag" data-author="${item.author}">${item.authorPrefixed}</span>
+            <div class="tag-group">
+              <span class="subreddit-tag" data-sub="${item.subreddit}">${item.subredditPrefixed}</span>
+              ${isSubredditMode ? `
+                <button class="join-btn sub-join-btn ${isSubJoined ? "joined" : ""}" data-target="${item.subreddit}" data-type="sub" type="button" title="${isSubJoined ? "Leave community" : "Join community"}">${isSubJoined ? "Joined ✓" : "+ Join"}</button>
+              ` : ""}
+            </div>
+            ${item.author && item.author !== "[deleted]" ? `
+              <div class="tag-group">
+                <span class="author-tag" data-author="${item.author}">${item.authorPrefixed}</span>
+              </div>
+            ` : ""}
           </div>
           <p class="post-title" title="Click to expand">${this.escapeHtml(item.title)}</p>
         </div>
@@ -932,6 +964,25 @@ export class FeedController {
         const author = tag.dataset.author || item.author;
         if (author) {
           this.onStatusUpdate({ viewAuthor: author });
+        }
+      });
+    });
+
+    // Click join/follow buttons to toggle subscription
+    const joinBtns = el.querySelectorAll(".join-btn");
+    joinBtns.forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const target = btn.dataset.target;
+        const type = btn.dataset.type || "sub";
+        if (target) {
+          this.onStatusUpdate({
+            toggleJoin: {
+              target,
+              type,
+              button: btn
+            }
+          });
         }
       });
     });
@@ -1232,6 +1283,25 @@ export class FeedController {
       user: this.user,
       sort: this.sort,
       timeFilter: this.timeFilter
+    });
+  }
+
+  updateTargetButtons(target, type, joined) {
+    if (!target) return;
+    const clean = String(target).trim().toLowerCase().replace(/^(?:r|u)\//, "");
+    const allBtns = this.container.querySelectorAll(`.join-btn[data-target][data-type="${type}"]`);
+    allBtns.forEach((btn) => {
+      const btnTarget = (btn.dataset.target || "").trim().toLowerCase().replace(/^(?:r|u)\//, "");
+      if (btnTarget === clean) {
+        btn.classList.toggle("joined", joined);
+        if (type === "user") {
+          btn.textContent = joined ? "Following ✓" : "+ Follow";
+          btn.title = joined ? "Unfollow creator" : "Follow creator";
+        } else {
+          btn.textContent = joined ? "Joined ✓" : "+ Join";
+          btn.title = joined ? "Leave community" : "Join community";
+        }
+      }
     });
   }
 }

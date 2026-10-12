@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Reddit Reels Bridge",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Extension proxy bridge for Reddit Reels feed",
   "permissions": [
     "cookies",

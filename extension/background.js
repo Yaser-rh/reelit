@@ -377,6 +377,61 @@ async function saveToReddit({ id, unsave = false }) {
   return { success: true, saved: !unsave, id: fullname };
 }
 
+// Subscribe (join) or unsubscribe from a subreddit or user profile
+async function subscribeTarget({ target, type = "sub", action = "sub" }) {
+  if (!target) throw new Error("No target community or profile provided");
+  const cleanName = String(target).trim().replace(/^\/?(?:r|u)\//i, "");
+
+  // Determine sr_name for Reddit API:
+  // For subreddits: sr_name is "funny"
+  // For user profiles: sr_name is "u_username"
+  const isUser = type === "user" || target.toLowerCase().startsWith("u/") || target.toLowerCase().startsWith("/u/") || target.toLowerCase().startsWith("u_");
+  let srName = cleanName;
+  if (isUser && !srName.toLowerCase().startsWith("u_")) {
+    srName = `u_${srName}`;
+  }
+
+  const modhash = await getModhash();
+  const endpoint = "https://www.reddit.com/api/subscribe";
+
+  const bodyParams = new URLSearchParams();
+  bodyParams.append("action", action === "unsub" ? "unsub" : "sub");
+  bodyParams.append("sr_name", srName);
+  bodyParams.append("api_type", "json");
+  bodyParams.append("skip_initial_defaults", "true");
+  if (modhash) bodyParams.append("uh", modhash);
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: bodyParams.toString()
+  });
+
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("You must be logged into your Reddit account in Chrome to join or follow.");
+  }
+
+  if (!res.ok) {
+    throw new Error(`Failed to ${action === "unsub" ? "leave" : "join"} ${isUser ? "u/" : "r/"}${cleanName} (HTTP ${res.status})`);
+  }
+
+  const resText = await res.text();
+  try {
+    const json = JSON.parse(resText);
+    if (json?.json?.errors?.length) {
+      const errDetail = json.json.errors.map((e) => e[1] || e[0]).join(", ");
+      throw new Error(`Reddit API Error: ${errDetail}`);
+    }
+  } catch (parseErr) {
+    if (parseErr.message.startsWith("Reddit API Error:")) throw parseErr;
+  }
+
+  return { success: true, target: cleanName, srName, action, isUser };
+}
+
 // Download media directly to user's device via chrome.downloads
 async function downloadMedia(payload) {
   const url = payload?.url;
@@ -514,6 +569,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case "SAVE_POST":
         return await saveToReddit(payload);
+
+      case "SUBSCRIBE_TARGET":
+        return await subscribeTarget(payload);
 
       case "DOWNLOAD_MEDIA":
         return await downloadMedia(payload);

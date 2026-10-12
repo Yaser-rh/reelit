@@ -45,6 +45,7 @@ export function classifyPost(rawChild) {
     createdUtc: post.created_utc,
     over18: post.over_18,
     saved: !!post.saved,
+    userIsSubscriber: post.user_is_subscriber === true,
     url: post.url
   };
 
@@ -296,10 +297,14 @@ export async function fetchFeed(options = {}) {
   const children = response?.data?.children || [];
   const nextAfter = response?.data?.after || null;
 
+  const isHomeFeed = !options.subreddit && !options.user;
   const items = [];
   for (const child of children) {
     const item = classifyPost(child);
     if (item) {
+      if (isHomeFeed && item.subreddit) {
+        setTargetJoined(item.subreddit, "sub", true);
+      }
       items.push(item);
     }
   }
@@ -311,3 +316,214 @@ export async function fetchFeed(options = {}) {
     endpoint
   };
 }
+
+/**
+ * Format subscriber count into human-readable string (e.g. 52M members, 120K members)
+ */
+export function formatSubscribers(num) {
+  if (!num || isNaN(num) || num <= 0) return "";
+  if (num >= 1000000) {
+    return (num / 1000000).toFixed(1).replace(/\.0$/, "") + "M members";
+  }
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1).replace(/\.0$/, "") + "K members";
+  }
+  return num + " members";
+}
+
+function cleanIconUrl(url) {
+  if (!url) return "";
+  return url.replace(/&amp;/g, "&").split("?")[0];
+}
+
+/**
+ * Search subreddits with typeahead autocomplete via Reddit Bridge
+ * @param {string} query
+ * @param {number} [limit=8]
+ */
+export async function searchSubreddits(query, limit = 8) {
+  if (!query || !query.trim()) return [];
+  const clean = query.trim().replace(/^r\//i, "");
+  if (!clean) return [];
+
+  // 1. Try modern Reddit autocomplete_v2 endpoint
+  try {
+    const url = `https://www.reddit.com/api/subreddit_autocomplete_v2.json?query=${encodeURIComponent(clean)}&include_over_18=true&include_profiles=false&limit=${limit}`;
+    const res = await bridge.fetchReddit(url);
+    const children = res?.data?.children || [];
+    const results = [];
+
+    for (const child of children) {
+      const d = child?.data;
+      if (!d || !d.display_name) continue;
+      if (d.name && d.name.startsWith("t2_")) continue; // Skip user profiles
+
+      results.push({
+        name: d.display_name,
+        prefixed: d.display_name_prefixed || `r/${d.display_name}`,
+        subscribers: d.subscribers || 0,
+        subscribersFormatted: formatSubscribers(d.subscribers || 0),
+        title: d.title || "",
+        over18: Boolean(d.over_18),
+        icon: cleanIconUrl(d.community_icon || d.icon_img)
+      });
+    }
+
+    if (results.length > 0) return results;
+  } catch (err) {
+    console.warn("[Reelit] Autocomplete v2 failed, attempting search fallback:", err);
+  }
+
+  // 2. Fallback to subreddits search
+  try {
+    const fallbackUrl = `https://old.reddit.com/subreddits/search.json?q=${encodeURIComponent(clean)}&limit=${limit}`;
+    const res = await bridge.fetchReddit(fallbackUrl);
+    const children = res?.data?.children || [];
+    return children.map((c) => {
+      const d = c.data;
+      return {
+        name: d.display_name,
+        prefixed: `r/${d.display_name}`,
+        subscribers: d.subscribers || 0,
+        subscribersFormatted: formatSubscribers(d.subscribers || 0),
+        title: d.title || "",
+        over18: Boolean(d.over18 || d.over_18),
+        icon: cleanIconUrl(d.community_icon || d.icon_img)
+      };
+    });
+  } catch (err) {
+    console.warn("[Reelit] Subreddit search fallback error:", err);
+    return [];
+  }
+}
+
+// Local cache for joined communities and followed profiles
+const JOINED_TARGETS_KEY = "reelit_joined_targets_v1";
+
+export function getJoinedTargets() {
+  try {
+    const raw = localStorage.getItem(JOINED_TARGETS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr.map((s) => String(s).toLowerCase()));
+    }
+  } catch (_) {}
+  return new Set();
+}
+
+export function saveJoinedTargets(set) {
+  try {
+    localStorage.setItem(JOINED_TARGETS_KEY, JSON.stringify([...set]));
+  } catch (_) {}
+}
+
+export function isTargetJoined(target, type = "sub") {
+  if (!target) return false;
+  const clean = String(target).trim().toLowerCase().replace(/^(?:r|u)\//, "");
+  const key = `${type}:${clean}`;
+  return getJoinedTargets().has(key);
+}
+
+export function setTargetJoined(target, type = "sub", joined = true) {
+  if (!target) return;
+  const clean = String(target).trim().toLowerCase().replace(/^(?:r|u)\//, "");
+  const set = getJoinedTargets();
+  const key = `${type}:${clean}`;
+  if (joined) {
+    set.add(key);
+  } else {
+    set.delete(key);
+  }
+  saveJoinedTargets(set);
+}
+
+/**
+ * Authoritatively check if user is subscribed to a subreddit from Reddit API
+ * Endpoint: /r/{sub}/about.json -> data.user_is_subscriber
+ */
+export async function checkSubredditSubscription(subName) {
+  if (!subName || !subName.trim()) return false;
+  const clean = subName.trim().replace(/^r\//i, "");
+  try {
+    const url = `https://www.reddit.com/r/${encodeURIComponent(clean)}/about.json`;
+    const res = await bridge.fetchReddit(url);
+    if (res?.data?.user_is_subscriber !== undefined && res?.data?.user_is_subscriber !== null) {
+      const isSub = Boolean(res.data.user_is_subscriber);
+      setTargetJoined(clean, "sub", isSub);
+      return isSub;
+    }
+  } catch (err) {
+    console.warn(`[Reelit] Failed to query subscription status for r/${clean}:`, err);
+  }
+  return isTargetJoined(clean, "sub");
+}
+
+/**
+ * Authoritatively check if user is following a creator from Reddit API
+ * Endpoint: /user/{user}/about.json -> data.subreddit.user_is_subscriber
+ */
+export async function checkUserSubscription(userName) {
+  if (!userName || !userName.trim()) return false;
+  const clean = userName.trim().replace(/^u\//i, "");
+  try {
+    const url = `https://www.reddit.com/user/${encodeURIComponent(clean)}/about.json`;
+    const res = await bridge.fetchReddit(url);
+    const subMeta = res?.data?.subreddit;
+    if (subMeta?.user_is_subscriber !== undefined && subMeta?.user_is_subscriber !== null) {
+      const isFollowed = Boolean(subMeta.user_is_subscriber);
+      setTargetJoined(clean, "user", isFollowed);
+      return isFollowed;
+    }
+  } catch (err) {
+    console.warn(`[Reelit] Failed to query follow status for u/${clean}:`, err);
+  }
+  return isTargetJoined(clean, "user");
+}
+
+/**
+ * Sync user's subscribed subreddits and followed users from Reddit API
+ * Endpoint: /subreddits/mine/subscriber.json?limit=100 (paginated)
+ */
+export async function syncUserSubscriptions() {
+  try {
+    let after = null;
+    let pages = 0;
+    const maxPages = 4; // up to 400 subreddits
+    const set = getJoinedTargets();
+
+    while (pages < maxPages) {
+      pages++;
+      let url = `https://www.reddit.com/subreddits/mine/subscriber.json?limit=100`;
+      if (after) url += `&after=${encodeURIComponent(after)}`;
+
+      const res = await bridge.fetchReddit(url);
+      const children = res?.data?.children || [];
+      if (children.length === 0) break;
+
+      for (const child of children) {
+        const d = child?.data;
+        if (!d) continue;
+        const name = d.display_name;
+        if (!name) continue;
+
+        if (name.toLowerCase().startsWith("u_")) {
+          const userClean = name.substring(2).toLowerCase();
+          set.add(`user:${userClean}`);
+        } else {
+          set.add(`sub:${name.toLowerCase()}`);
+        }
+      }
+
+      after = res?.data?.after;
+      if (!after) break;
+    }
+
+    saveJoinedTargets(set);
+    return set;
+  } catch (err) {
+    console.warn("[Reelit] Failed to sync user subscriptions:", err);
+    return getJoinedTargets();
+  }
+}
+
+

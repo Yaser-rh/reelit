@@ -174,6 +174,44 @@ npm run dev
       - Clicking the logo opens an App Status & Account popover showing extension health, detected Reddit username (e.g. `u/username`), and seen reels count (with a "Reset" history button).
       - Includes a "View Debug Logs" button; pressing the logo button again while logs are open immediately closes the debug console.
 
+11. **Live Subreddit Search & Typeahead Retrieval (v1.6.0)**:
+    - **Cleaned Feed Dropdown**: Removed all hardcoded subreddit presets. Clicking the feed pill presents a clean 2-option menu: **Home (Your Feed)** and **Search Subreddits...** (plus a dynamic Recent Communities list).
+    - **Embedded Search View**: Clicking Search seamlessly expands an in-dropdown search bar with a back button, clear button, and autofocus input.
+    - **Live Reddit Typeahead Autocomplete**:
+      - As the user types (e.g. `fun`), queries Reddit's `/api/subreddit_autocomplete_v2.json` (with automatic fallback to `/subreddits/search.json`).
+      - Renders real-time community suggestions with community icons, formatted subscriber counts (e.g. `59.2M members`), and NSFW tags.
+      - 1-click selection loads the subreddit feed immediately and saves it to the user's Recent list in `localStorage`.
+
+12. **Subreddit Join & Creator Profile Follow System (v1.7.0)**:
+    - **Reddit API Subscription Proxy**: Added background worker action `SUBSCRIBE_TARGET` querying `POST https://www.reddit.com/api/subscribe` with user session credentials and modhash. Handles both communities (`sr_name="sub"`) and creators (`sr_name="u_username"`).
+    - **Reel Overlay Controls**: Added compact `+ Join` / `Joined ✓` pills next to `r/subreddit` and `+ Follow` / `Following ✓` pills next to `u/author` on both visual video/image overlays and text cards.
+    - **Creator Profile Header Follow**: Added interactive follow button to the top Creator banner (`#creator-banner`) when viewing user profile feeds.
+    - **Search Suggestion Quick Join**: Each community row in live search results includes a direct `+ Join` button to subscribe without leaving the search menu.
+    - **Optimistic Reactive State**: Persists joined state in `localStorage` (`reelit_joined_targets_v1`) and synchronizes all matching buttons across the DOM instantly, with automatic rollback and toast notifications.
+
+13. **Subreddit Join, Follow Logic Refinement & Feed Isolation (v1.8.0)**:
+    - **Cleaned Home Feed Overlays**:
+      - Removed join buttons from home feed reels (posts on home feed come from joined communities; no redundant "+ Join" pills).
+      - Removed user follow buttons across all home and subreddit reel cards; creators are followed exclusively via the dedicated Creator Profile header banner (`#creator-banner`).
+      - Cleaned search typeahead suggestions: removed join buttons to keep the autocomplete menu focused solely on community navigation.
+    - **Contextual Subreddit Join Button**:
+      - Added `#sub-header-join-btn` in the top navigation header next to the subreddit pill, visible only when browsing a subreddit.
+      - Displays live reactive subscription status (`+ Join` vs `Joined ✓`) synchronized across the header and active subreddit reels.
+    - **Authoritative Subscription Status Checking**:
+      - Fixed session subscription sync: on bridge connection, queries `/subreddits/mine/subscriber.json` to load user's subscribed subreddits and followed creators into cache.
+      - Real-time Subreddit Verification: querying `/r/{sub}/about.json` evaluates Reddit's authoritative `data.user_is_subscriber` boolean directly.
+      - Real-time Creator Verification: querying `/user/{author}/about.json` evaluates `data.subreddit.user_is_subscriber` directly.
+      - Posts delivered in Home feed automatically seed cache with `sub:name` joined status.
+    - **Seen Post Filtering Isolated to Home Feed**:
+      - Home feed retains dynamic freshness rotation, tracking seen reels and filtering repeat items.
+      - Subreddit feeds (and Creator profiles) are completely exempt from seen deduplication; they retain all posts returned by Reddit (`Hot`, `Top`, `New`, `Rising`) without items disappearing after being watched.
+      - Scrolling in subreddits or creator profiles does not pollute the Home feed seen history.
+    - **Recent Searches Management & Clear Button**:
+      - Added a "Clear" button in the Recent Communities header within the feed dropdown menu.
+      - Added individual `×` remove buttons on each recent search item to delete specific communities from history.
+      - When opening the search view with an empty input, recent searches are displayed immediately with a "Clear" button and quick 1-click selection.
+      - Action emits toast confirmation and dynamically updates localStorage.
+
 ---
 
 ## 6. Next Steps / Future Roadmap

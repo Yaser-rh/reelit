@@ -179,6 +179,11 @@ class ExtensionBridge {
     return await this.send("SAVE_POST", { id, unsave });
   }
 
+  // Convenience helper for subscribing / joining / following
+  async subscribeTarget(target, type = "sub", action = "sub") {
+    return await this.send("SUBSCRIBE_TARGET", { target, type, action });
+  }
+
   // Convenience helper for downloading media
   async downloadMedia(url, filename) {
     return await this.send("DOWNLOAD_MEDIA", { url, filename });

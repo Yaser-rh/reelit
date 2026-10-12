@@ -1,7 +1,15 @@
 // Reddit Reels Application Entrypoint
 import bridge from './bridge.js';
 import { FeedController } from './feed.js';
-import { checkRedditSession } from './reddit.js';
+import {
+  checkRedditSession,
+  searchSubreddits,
+  isTargetJoined,
+  setTargetJoined,
+  checkSubredditSubscription,
+  checkUserSubscription,
+  syncUserSubscriptions
+} from './reddit.js';
 
 // DOM Elements
 const feedContainer = document.getElementById("feed");
@@ -27,10 +35,27 @@ const feedDropdown = document.getElementById("feed-dropdown");
 const feedDropdownBtn = document.getElementById("feed-dropdown-btn");
 const feedSelectedText = document.getElementById("feed-selected-text");
 const feedDropdownMenu = document.getElementById("feed-dropdown-menu");
+const subHeaderJoinBtn = document.getElementById("sub-header-join-btn");
+const subHeaderJoinText = document.getElementById("sub-header-join-text");
+
+// Subreddit Search & Menu Elements
+const feedMenuMain = document.getElementById("feed-menu-main");
+const feedMenuSearch = document.getElementById("feed-menu-search");
+const feedOpenSearchBtn = document.getElementById("feed-open-search-btn");
+const subSearchBackBtn = document.getElementById("sub-search-back-btn");
+const subSearchInput = document.getElementById("sub-search-input");
+const subSearchClearBtn = document.getElementById("sub-search-clear-btn");
+const subSearchHint = document.getElementById("sub-search-hint");
+const subSearchResults = document.getElementById("sub-search-results");
+const feedRecentSection = document.getElementById("feed-recent-section");
+const feedRecentItems = document.getElementById("feed-recent-items");
+const feedRecentClearBtn = document.getElementById("feed-recent-clear-btn");
 
 const creatorBanner = document.getElementById("creator-banner");
 const creatorBannerName = document.getElementById("creator-banner-name");
 const creatorBackBtn = document.getElementById("creator-back-btn");
+const creatorFollowBtn = document.getElementById("creator-follow-btn");
+const creatorFollowText = document.getElementById("creator-follow-text");
 
 // Reelit Logo & Status Popover Elements
 const brandLogoWrapper = document.getElementById("brand-logo-wrapper");
@@ -136,7 +161,12 @@ const feedController = new FeedController({
     }
 
     if (state.changeSubreddit) {
+      saveRecentSubreddit(state.changeSubreddit);
       selectSubreddit(state.changeSubreddit);
+    }
+
+    if (state.toggleJoin) {
+      handleToggleJoin(state.toggleJoin.target, state.toggleJoin.type);
     }
   },
   onDebugLog: (msg) => logDebug(msg)
@@ -269,6 +299,78 @@ saveActionReddit?.addEventListener("click", async () => {
   }
 });
 
+// Toggle subscription (Join community or Follow profile)
+async function handleToggleJoin(target, type = "sub") {
+  if (!target) return;
+  const clean = String(target).trim().replace(/^\/?(?:r|u)\//i, "");
+  const isUser = type === "user";
+  const currentlyJoined = isTargetJoined(clean, type);
+  const nextJoined = !currentlyJoined;
+  const action = nextJoined ? "sub" : "unsub";
+
+  // Optimistic UI updates across feed, creator banner, and header join button
+  setTargetJoined(clean, type, nextJoined);
+  feedController.updateTargetButtons(clean, type, nextJoined);
+  updateCreatorFollowButtonState(clean, nextJoined);
+  updateSubHeaderJoinButtonState(clean, nextJoined);
+
+  const displayTarget = isUser ? `u/${clean}` : `r/${clean}`;
+  if (nextJoined) {
+    showToast(`Joined ${displayTarget}! ✓`);
+  } else {
+    showToast(`Left ${displayTarget}`);
+  }
+
+  try {
+    await bridge.subscribeTarget(clean, type, action);
+    logDebug(`Reddit subscription ${action} succeeded for ${displayTarget}`);
+  } catch (err) {
+    console.warn(`Failed to ${action} ${displayTarget}:`, err);
+    // Rollback state on error
+    setTargetJoined(clean, type, currentlyJoined);
+    feedController.updateTargetButtons(clean, type, currentlyJoined);
+    updateCreatorFollowButtonState(clean, currentlyJoined);
+    updateSubHeaderJoinButtonState(clean, currentlyJoined);
+    showToast(`Failed to ${action === "sub" ? "join" : "leave"} ${displayTarget}: ${err.message}`);
+  }
+}
+
+function updateCreatorFollowButtonState(author, joined) {
+  if (!currentAuthor) return;
+  const cleanAuthor = currentAuthor.trim().toLowerCase().replace(/^u\//, "");
+  const cleanTarget = (author || "").trim().toLowerCase().replace(/^u\//, "");
+  if (cleanAuthor === cleanTarget && creatorFollowBtn) {
+    creatorFollowBtn.classList.toggle("joined", joined);
+    if (creatorFollowText) {
+      creatorFollowText.textContent = joined ? "Following ✓" : "+ Follow";
+    }
+    creatorFollowBtn.title = joined ? "Unfollow creator" : "Follow creator";
+  }
+}
+
+function updateSubHeaderJoinButtonState(subreddit, joined) {
+  if (!subHeaderJoinBtn || !subHeaderJoinText) return;
+  if (!currentSubreddit || currentAuthor) {
+    subHeaderJoinBtn.style.display = "none";
+    return;
+  }
+  const cleanCurrent = currentSubreddit.trim().toLowerCase().replace(/^r\//, "");
+  const cleanTarget = (subreddit || "").trim().toLowerCase().replace(/^r\//, "");
+  if (cleanCurrent === cleanTarget) {
+    subHeaderJoinBtn.style.display = "inline-flex";
+    subHeaderJoinBtn.classList.toggle("joined", joined);
+    subHeaderJoinText.textContent = joined ? "Joined ✓" : "+ Join";
+    subHeaderJoinBtn.title = joined ? "Leave community" : "Join community";
+  }
+}
+
+subHeaderJoinBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (currentSubreddit) {
+    handleToggleJoin(currentSubreddit, "sub");
+  }
+});
+
 // Dropdown Management
 const allDropdowns = [sortDropdown, timeDropdown, feedDropdown].filter(Boolean);
 
@@ -340,8 +442,10 @@ timeDropdownBtn?.addEventListener("click", (e) => {
   toggleDropdown(timeDropdown);
 });
 
+// Feed dropdown button: Resets search mode and opens main menu
 feedDropdownBtn?.addEventListener("click", (e) => {
   e.stopPropagation();
+  closeSubredditSearch();
   toggleDropdown(feedDropdown);
 });
 
@@ -412,28 +516,284 @@ timeDropdownMenu?.addEventListener("click", (e) => {
   });
 });
 
-// Subreddit Dropdown Selection Handler
-feedDropdownMenu?.addEventListener("click", (e) => {
-  const item = e.target.closest(".dropdown-item");
-  if (!item) return;
+// Recent Subreddits Storage
+const RECENT_SUBS_KEY = "reelit_recent_subreddits_v1";
 
-  let val = item.dataset.value;
+function loadRecentSubreddits() {
+  try {
+    const raw = localStorage.getItem(RECENT_SUBS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch (_) {}
+  return [];
+}
 
-  if (val === "custom") {
-    closeAllDropdowns();
-    const custom = prompt("Enter subreddit name (e.g. 'damnthatsinteresting' or 'aww'):");
-    if (!custom || !custom.trim()) return;
+function clearRecentSubreddits() {
+  try {
+    localStorage.removeItem(RECENT_SUBS_KEY);
+  } catch (_) {}
+  renderRecentSubreddits();
+  renderSearchRecentView();
+  showToast("Recent searches cleared 🧹");
+}
 
-    const clean = custom.trim().replace(/^r\//i, "");
-    selectSubreddit(clean);
+function removeRecentSubreddit(name) {
+  if (!name) return;
+  const clean = name.trim().toLowerCase().replace(/^r\//i, "");
+  let list = loadRecentSubreddits().filter((s) => s.toLowerCase() !== clean);
+  try {
+    localStorage.setItem(RECENT_SUBS_KEY, JSON.stringify(list));
+  } catch (_) {}
+  renderRecentSubreddits();
+  renderSearchRecentView();
+}
+
+function saveRecentSubreddit(name) {
+  if (!name || !name.trim()) return;
+  const clean = name.trim().replace(/^r\//i, "");
+  let list = loadRecentSubreddits().filter((s) => s.toLowerCase() !== clean.toLowerCase());
+  list.unshift(clean);
+  if (list.length > 5) list = list.slice(0, 5);
+  try {
+    localStorage.setItem(RECENT_SUBS_KEY, JSON.stringify(list));
+  } catch (_) {}
+  renderRecentSubreddits();
+}
+
+function renderRecentSubreddits() {
+  if (!feedRecentSection || !feedRecentItems) return;
+  const list = loadRecentSubreddits();
+  if (list.length === 0) {
+    feedRecentSection.style.display = "none";
+    feedRecentItems.innerHTML = "";
+    return;
+  }
+  feedRecentSection.style.display = "block";
+  feedRecentItems.innerHTML = "";
+  list.forEach((subName) => {
+    const item = document.createElement("div");
+    item.className = `dropdown-item recent-sub-item ${currentSubreddit.toLowerCase() === subName.toLowerCase() ? "active" : ""}`;
+    item.dataset.value = subName;
+    item.innerHTML = `
+      <div class="recent-sub-left">
+        <span class="search-result-icon" style="width: 18px; height: 18px; font-size: 0.58rem;">r/</span>
+        <span class="recent-sub-name">r/${subName}</span>
+      </div>
+      <button class="recent-remove-btn" type="button" title="Remove r/${subName}">&times;</button>
+    `;
+    item.addEventListener("click", (e) => {
+      if (e.target.closest(".recent-remove-btn")) return;
+      selectSubreddit(subName);
+    });
+    const removeBtn = item.querySelector(".recent-remove-btn");
+    removeBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeRecentSubreddit(subName);
+    });
+    feedRecentItems.appendChild(item);
+  });
+}
+
+feedRecentClearBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  clearRecentSubreddits();
+});
+
+// Render recent searches view inside search mode dropdown
+function renderSearchRecentView() {
+  if (!subSearchResults) return;
+  const list = loadRecentSubreddits();
+  if (list.length === 0) {
+    if (subSearchHint) {
+      subSearchHint.textContent = "Type a name to search Reddit communities";
+      subSearchHint.style.display = "block";
+    }
+    subSearchResults.innerHTML = "";
     return;
   }
 
-  selectSubreddit(val);
+  if (subSearchHint) {
+    subSearchHint.style.display = "none";
+  }
+
+  subSearchResults.innerHTML = `
+    <div class="search-recent-header">
+      <span class="search-recent-title">Recent Searches</span>
+      <button class="search-recent-clear-btn" id="search-recent-clear-btn" type="button" title="Clear all recent searches">Clear</button>
+    </div>
+  `;
+
+  const clearBtn = subSearchResults.querySelector("#search-recent-clear-btn");
+  clearBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    clearRecentSubreddits();
+  });
+
+  list.forEach((subName) => {
+    const item = document.createElement("div");
+    item.className = `search-result-item recent-sub-item ${currentSubreddit.toLowerCase() === subName.toLowerCase() ? "active" : ""}`;
+    item.innerHTML = `
+      <div class="recent-sub-left">
+        <div class="search-result-icon" style="width: 22px; height: 22px; font-size: 0.62rem;">r/</div>
+        <div class="search-result-text">
+          <div class="search-result-name">r/${subName}</div>
+        </div>
+      </div>
+      <button class="recent-remove-btn" type="button" title="Remove r/${subName}">&times;</button>
+    `;
+    item.addEventListener("click", (e) => {
+      if (e.target.closest(".recent-remove-btn")) return;
+      selectSubreddit(subName);
+    });
+    const removeBtn = item.querySelector(".recent-remove-btn");
+    removeBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeRecentSubreddit(subName);
+    });
+    subSearchResults.appendChild(item);
+  });
+}
+
+// Subreddit Search UI Handlers
+let searchDebounceTimer = null;
+let currentSearchQuery = "";
+
+function openSubredditSearch() {
+  if (feedMenuMain) feedMenuMain.style.display = "none";
+  if (feedMenuSearch) feedMenuSearch.style.display = "flex";
+  if (subSearchInput) {
+    subSearchInput.value = "";
+    if (subSearchClearBtn) subSearchClearBtn.style.display = "none";
+    renderSearchRecentView();
+    setTimeout(() => subSearchInput.focus(), 60);
+  }
+}
+
+function closeSubredditSearch() {
+  if (feedMenuSearch) feedMenuSearch.style.display = "none";
+  if (feedMenuMain) feedMenuMain.style.display = "block";
+  renderRecentSubreddits();
+}
+
+feedOpenSearchBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  openSubredditSearch();
+});
+
+subSearchBackBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  closeSubredditSearch();
+});
+
+subSearchClearBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (subSearchInput) {
+    subSearchInput.value = "";
+    subSearchInput.focus();
+  }
+  if (subSearchClearBtn) subSearchClearBtn.style.display = "none";
+  renderSearchRecentView();
+});
+
+subSearchInput?.addEventListener("input", (e) => {
+  const query = e.target.value.trim().replace(/^r\//i, "");
+  currentSearchQuery = query;
+
+  if (subSearchClearBtn) {
+    subSearchClearBtn.style.display = query ? "block" : "none";
+  }
+
+  clearTimeout(searchDebounceTimer);
+
+  if (!query) {
+    renderSearchRecentView();
+    return;
+  }
+
+  if (subSearchHint) {
+    subSearchHint.textContent = `Searching communities for "${query}"... ⏳`;
+    subSearchHint.style.display = "block";
+  }
+
+  searchDebounceTimer = setTimeout(async () => {
+    try {
+      const results = await searchSubreddits(query, 8);
+      if (currentSearchQuery !== query) return; // Discard stale query response
+
+      if (results.length === 0) {
+        if (subSearchHint) {
+          subSearchHint.textContent = `No communities found matching "r/${query}". Press Enter to visit anyway.`;
+          subSearchHint.style.display = "block";
+        }
+        if (subSearchResults) subSearchResults.innerHTML = "";
+        return;
+      }
+
+      if (subSearchHint) subSearchHint.style.display = "none";
+      if (subSearchResults) {
+        subSearchResults.innerHTML = "";
+        results.forEach((sub) => {
+          const item = document.createElement("div");
+          item.className = `search-result-item ${currentSubreddit.toLowerCase() === sub.name.toLowerCase() ? "active" : ""}`;
+          item.innerHTML = `
+            <div class="search-result-info">
+              <div class="search-result-icon">
+                ${sub.icon ? `<img src="${sub.icon}" onerror="this.remove()" />` : sub.name.substring(0, 1).toUpperCase()}
+              </div>
+              <div class="search-result-text">
+                <div class="search-result-name">${sub.prefixed}</div>
+                ${sub.subscribersFormatted ? `<div class="search-result-sub">${sub.subscribersFormatted}</div>` : ""}
+              </div>
+            </div>
+            <div class="search-result-actions">
+              ${sub.over18 ? `<span class="search-result-badge">18+</span>` : ""}
+            </div>
+          `;
+          item.addEventListener("click", () => {
+            saveRecentSubreddit(sub.name);
+            selectSubreddit(sub.name);
+          });
+          subSearchResults.appendChild(item);
+        });
+      }
+    } catch (err) {
+      console.warn("Search error:", err);
+      if (subSearchHint) {
+        subSearchHint.textContent = `Search failed: ${err.message}`;
+        subSearchHint.style.display = "block";
+      }
+    }
+  }, 220);
+});
+
+subSearchInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const query = subSearchInput.value.trim().replace(/^r\//i, "");
+    if (!query) return;
+
+    // If there is an active/first search result item, pick that
+    const firstResult = subSearchResults?.querySelector(".search-result-item");
+    if (firstResult) {
+      firstResult.click();
+      return;
+    }
+
+    saveRecentSubreddit(query);
+    selectSubreddit(query);
+  }
+});
+
+// Home option handler in main feed menu
+feedMenuMain?.querySelector('[data-action="home"]')?.addEventListener("click", () => {
+  selectSubreddit("");
 });
 
 function selectSubreddit(subName) {
   closeAllDropdowns();
+  closeSubredditSearch();
   const clean = (subName || "").trim().replace(/^r\//i, "");
   currentSubreddit = clean;
   currentAuthor = "";
@@ -441,39 +801,34 @@ function selectSubreddit(subName) {
   if (creatorBanner) creatorBanner.style.display = "none";
   if (feedDropdown) feedDropdown.style.display = "inline-flex";
 
-  // Check if item exists in feed dropdown menu, or create it
-  let matchingItem = null;
-  feedDropdownMenu?.querySelectorAll(".dropdown-item").forEach((el) => {
-    el.classList.remove("active");
-    if (el.dataset.value && el.dataset.value.toLowerCase() === clean.toLowerCase()) {
-      matchingItem = el;
-    } else if (!clean && el.dataset.value === "") {
-      matchingItem = el;
-    }
-  });
-
-  if (!matchingItem && clean) {
-    matchingItem = document.createElement("div");
-    matchingItem.className = "dropdown-item";
-    matchingItem.dataset.value = clean;
-    matchingItem.textContent = `r/${clean}`;
-    const divider = feedDropdownMenu?.querySelector(".dropdown-divider");
-    if (divider) {
-      feedDropdownMenu.insertBefore(matchingItem, divider);
-    } else if (feedDropdownMenu) {
-      feedDropdownMenu.appendChild(matchingItem);
-    }
+  // Update selection UI in feed dropdown
+  const homeItem = feedMenuMain?.querySelector('[data-action="home"]');
+  if (homeItem) {
+    homeItem.classList.toggle("active", !clean);
   }
 
-  if (matchingItem) {
-    matchingItem.classList.add("active");
-    if (feedSelectedText) feedSelectedText.textContent = matchingItem.textContent.trim();
-  } else if (feedSelectedText) {
+  if (feedSelectedText) {
     feedSelectedText.textContent = clean ? `r/${clean}` : "Home (Your Feed)";
+  }
+
+  // Update subreddit join button in header
+  if (clean) {
+    const isJoined = isTargetJoined(clean, "sub");
+    updateSubHeaderJoinButtonState(clean, isJoined);
+    // Authoritatively check subscription with Reddit API
+    checkSubredditSubscription(clean).then((verifiedJoined) => {
+      if (currentSubreddit.toLowerCase() === clean.toLowerCase()) {
+        updateSubHeaderJoinButtonState(clean, verifiedJoined);
+        feedController.updateTargetButtons(clean, "sub", verifiedJoined);
+      }
+    });
+  } else {
+    updateSubHeaderJoinButtonState("", false);
   }
 
   // Update sort dropdown options based on new feed mode (Home vs Subreddit)
   updateSortDropdownOptions();
+  renderRecentSubreddits();
 
   hideError();
   feedController.loadInitialFeed({
@@ -550,6 +905,8 @@ function openAuthorProfile(author) {
   if (!author) return;
   const clean = author.replace(/^u\//i, "");
 
+  updateSubHeaderJoinButtonState("", false);
+
   if (!currentAuthor) {
     previousFeed = {
       subreddit: currentSubreddit,
@@ -562,6 +919,14 @@ function openAuthorProfile(author) {
   if (creatorBanner && creatorBannerName) {
     creatorBanner.style.display = "flex";
     creatorBannerName.textContent = `u/${clean}`;
+    const isFollowed = isTargetJoined(clean, "user");
+    updateCreatorFollowButtonState(clean, isFollowed);
+    // Authoritatively verify follow status with Reddit API
+    checkUserSubscription(clean).then((verifiedFollowed) => {
+      if (currentAuthor.toLowerCase() === clean.toLowerCase()) {
+        updateCreatorFollowButtonState(clean, verifiedFollowed);
+      }
+    });
   }
   if (feedDropdown) {
     feedDropdown.style.display = "none";
@@ -587,6 +952,19 @@ function closeAuthorProfile() {
   }
 
   currentSubreddit = previousFeed.subreddit;
+  if (currentSubreddit) {
+    const isJoined = isTargetJoined(currentSubreddit, "sub");
+    updateSubHeaderJoinButtonState(currentSubreddit, isJoined);
+    checkSubredditSubscription(currentSubreddit).then((verifiedJoined) => {
+      if (currentSubreddit.toLowerCase() === previousFeed.subreddit.toLowerCase()) {
+        updateSubHeaderJoinButtonState(currentSubreddit, verifiedJoined);
+        feedController.updateTargetButtons(currentSubreddit, "sub", verifiedJoined);
+      }
+    });
+  } else {
+    updateSubHeaderJoinButtonState("", false);
+  }
+
   updateSortDropdownOptions();
   setSortSelection(previousFeed.sort);
 
@@ -601,13 +979,11 @@ function closeAuthorProfile() {
   }
   currentTime = previousFeed.time;
 
-  // Update feed dropdown active item
-  feedDropdownMenu?.querySelectorAll(".dropdown-item").forEach((el) => {
-    el.classList.toggle("active", el.dataset.value === currentSubreddit);
-    if (el.dataset.value === currentSubreddit && feedSelectedText) {
-      feedSelectedText.textContent = el.textContent.trim();
-    }
-  });
+  if (feedSelectedText) {
+    feedSelectedText.textContent = currentSubreddit ? `r/${currentSubreddit}` : "Home (Your Feed)";
+  }
+
+  renderRecentSubreddits();
 
   hideError();
   feedController.loadInitialFeed({
@@ -618,6 +994,13 @@ function closeAuthorProfile() {
 }
 
 creatorBackBtn?.addEventListener("click", closeAuthorProfile);
+
+creatorFollowBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (currentAuthor) {
+    handleToggleJoin(currentAuthor, "user");
+  }
+});
 
 // Show error modal
 function showError(title, desc) {
@@ -682,6 +1065,14 @@ bridge.onStatusChange((status, details) => {
       }
       if (session?.loggedIn) {
         logDebug(`Reddit session: Logged in as ${session.username || "user"} (${session.cookieCount} cookies detected). Bridge version: v${ver}`);
+        syncUserSubscriptions().then(() => {
+          logDebug("User subscriptions synchronized from Reddit.");
+          if (currentSubreddit) {
+            const isJoined = isTargetJoined(currentSubreddit, "sub");
+            updateSubHeaderJoinButtonState(currentSubreddit, isJoined);
+            feedController.updateTargetButtons(currentSubreddit, "sub", isJoined);
+          }
+        });
       } else {
         logDebug(`Reddit session: Guest mode. Bridge version: v${ver}`);
       }
@@ -745,7 +1136,8 @@ closeDebugBtn?.addEventListener("click", () => {
   closeDebugPanel();
 });
 
-// Initial sort dropdown options setup
+// Initial setup
+renderRecentSubreddits();
 updateSortDropdownOptions();
 updatePopoverStats();
 
