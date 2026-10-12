@@ -173,6 +173,16 @@ class ExtensionBridge {
   async resolveRedgifs(urlOrId) {
     return await this.send("RESOLVE_REDGIFS", { url: urlOrId });
   }
+
+  // Convenience helper for saving/unsaving Reddit post
+  async saveToReddit(id, unsave = false) {
+    return await this.send("SAVE_POST", { id, unsave });
+  }
+
+  // Convenience helper for downloading media
+  async downloadMedia(url, filename) {
+    return await this.send("DOWNLOAD_MEDIA", { url, filename });
+  }
 }
 
 export const bridge = new ExtensionBridge();

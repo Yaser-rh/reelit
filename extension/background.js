@@ -2,9 +2,30 @@
 
 let redgifsToken = null;
 let redgifsTokenExpiry = 0;
+let currentModhash = null;
+
+// Automatically ensure Reddit's over18 cookie is set to bypass NSFW age gates
+async function ensureOver18Cookie() {
+  try {
+    await chrome.cookies.set({
+      url: "https://www.reddit.com",
+      name: "over18",
+      value: "1",
+      domain: ".reddit.com",
+      path: "/",
+      secure: true
+    });
+  } catch (err) {
+    console.warn("Failed to set over18 cookie:", err);
+  }
+}
+ensureOver18Cookie();
+if (chrome.runtime?.onInstalled) chrome.runtime.onInstalled.addListener(ensureOver18Cookie);
+if (chrome.runtime?.onStartup) chrome.runtime.onStartup.addListener(ensureOver18Cookie);
 
 // Check Reddit session cookies
 async function checkRedditSession() {
+  await ensureOver18Cookie();
   try {
     const cookies = await chrome.cookies.getAll({ domain: "reddit.com" });
     const hasSession = cookies.some((c) => c.name === "reddit_session" || c.name === "token");
@@ -264,6 +285,8 @@ async function executeRedditFetch(targetUrl) {
   if (!url.includes("raw_json=1")) {
     url += (url.includes("?") ? "&" : "?") + "raw_json=1";
   }
+  // Cache-busting parameter to ensure Reddit's dynamic feed rotates fresh on every refresh
+  url += (url.includes("?") ? "&" : "?") + `_t=${Date.now()}`;
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -272,8 +295,10 @@ async function executeRedditFetch(targetUrl) {
     const response = await fetch(url, {
       method: "GET",
       credentials: "include",
+      cache: "no-store",
       headers: {
-        Accept: "application/json"
+        Accept: "application/json",
+        "Cache-Control": "no-cache"
       },
       signal: controller.signal
     });
@@ -283,6 +308,90 @@ async function executeRedditFetch(targetUrl) {
   } catch (err) {
     clearTimeout(timeoutId);
     throw err;
+  }
+}
+
+// Get user modhash for authorized Reddit actions (Save/Unsave)
+async function getModhash() {
+  if (currentModhash) return currentModhash;
+  try {
+    const res = await fetch("https://www.reddit.com/api/me.json", {
+      credentials: "include",
+      headers: { Accept: "application/json" }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.data?.modhash) {
+        currentModhash = data.data.modhash;
+        return currentModhash;
+      }
+    }
+  } catch (_) {}
+  return "";
+}
+
+// Save or unsave post to Reddit account
+async function saveToReddit({ id, unsave = false }) {
+  if (!id) throw new Error("No post ID provided for saving");
+  const fullname = id.startsWith("t3_") ? id : `t3_${id}`;
+  const modhash = await getModhash();
+  const endpoint = unsave ? "https://www.reddit.com/api/unsave" : "https://www.reddit.com/api/save";
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: `id=${encodeURIComponent(fullname)}&uh=${encodeURIComponent(modhash || "")}`
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to ${unsave ? "unsave" : "save"} post on Reddit (HTTP ${res.status})`);
+  }
+
+  return { success: true, saved: !unsave, id: fullname };
+}
+
+// Download media directly to user's device via chrome.downloads
+async function downloadMedia(payload) {
+  const url = payload?.url;
+  const filename = payload?.filename;
+  if (!url) throw new Error("No media URL provided for download");
+
+  const safeFilename = (filename || "reelit-media")
+    .replace(/[/\\?%*:|"<>]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .substring(0, 100);
+
+  let ext = ".mp4";
+  if (url.includes(".jpg") || url.includes(".jpeg")) ext = ".jpg";
+  else if (url.includes(".png")) ext = ".png";
+  else if (url.includes(".gif")) ext = ".gif";
+
+  const finalName = safeFilename.endsWith(ext) ? safeFilename : `${safeFilename}${ext}`;
+
+  if (chrome.downloads) {
+    return new Promise((resolve, reject) => {
+      chrome.downloads.download(
+        {
+          url: url,
+          filename: `Reelit/${finalName}`,
+          conflictAction: "uniquify",
+          saveAs: false
+        },
+        (downloadId) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve({ success: true, downloadId, filename: finalName });
+          }
+        }
+      );
+    });
+  } else {
+    return { success: false, fallbackUrl: url, filename: finalName };
   }
 }
 
@@ -359,6 +468,11 @@ async function fetchReddit(payload) {
     throw new Error(`Reddit API Error: ${json.message || json.error}`);
   }
 
+  // Save modhash from listing response if present
+  if (json?.data?.modhash) {
+    currentModhash = json.data.modhash;
+  }
+
   return json;
 }
 
@@ -373,6 +487,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       case "RESOLVE_REDGIFS":
         return await resolveRedgifs(payload);
+
+      case "SAVE_POST":
+        return await saveToReddit(payload);
+
+      case "DOWNLOAD_MEDIA":
+        return await downloadMedia(payload);
 
       case "CHECK_SESSION":
         return await checkRedditSession();

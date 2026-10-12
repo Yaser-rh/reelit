@@ -75,6 +75,10 @@ const feedController = new FeedController({
       showToast(state.toast);
     }
 
+    if (state.openSaveModal) {
+      openSaveModal(state.openSaveModal, state.element);
+    }
+
     if (state.changeSubreddit) {
       feedSelect.value = state.changeSubreddit;
       // If not in standard list, add it
@@ -85,6 +89,9 @@ const feedController = new FeedController({
         feedSelect.insertBefore(opt, feedSelect.lastElementChild);
         feedSelect.value = state.changeSubreddit;
       }
+      if (sortSelect.value === "best") {
+        sortSelect.value = "hot";
+      }
       feedController.loadInitialFeed({
         subreddit: state.changeSubreddit,
         sort: sortSelect.value
@@ -92,6 +99,126 @@ const feedController = new FeedController({
     }
   },
   onDebugLog: (msg) => logDebug(msg)
+});
+
+// Save Modal Elements & Interaction
+const saveModal = document.getElementById("save-modal");
+const saveModalClose = document.getElementById("save-modal-close");
+const saveModalTitle = document.getElementById("save-modal-post-title");
+const saveActionDownload = document.getElementById("save-action-download");
+const saveActionReddit = document.getElementById("save-action-reddit");
+const saveRedditHeading = document.getElementById("save-reddit-btn-heading");
+const saveRedditSub = document.getElementById("save-reddit-btn-sub");
+const saveDownloadSub = document.getElementById("save-download-sub");
+
+let currentSaveItem = null;
+let currentSaveElement = null;
+
+function openSaveModal(item, element) {
+  if (!item) return;
+  currentSaveItem = item;
+  currentSaveElement = element;
+
+  if (saveModalTitle) {
+    saveModalTitle.textContent = item.title || "Untitled Reel";
+  }
+
+  if (saveRedditHeading && saveRedditSub) {
+    if (item.saved) {
+      saveRedditHeading.textContent = "Unsave from Reddit";
+      saveRedditSub.textContent = "Remove bookmark from your Reddit account";
+    } else {
+      saveRedditHeading.textContent = "Save to Reddit Account";
+      saveRedditSub.textContent = "Bookmark this post on your Reddit profile";
+    }
+  }
+
+  if (saveDownloadSub) {
+    if (item.videoUrl) {
+      saveDownloadSub.textContent = "Save MP4 video directly to Downloads folder";
+    } else if (item.imageUrl || (item.images && item.images.length > 0)) {
+      saveDownloadSub.textContent = "Save image directly to Downloads folder";
+    } else {
+      saveDownloadSub.textContent = "Download media to device";
+    }
+  }
+
+  if (saveModal) {
+    saveModal.style.display = "flex";
+  }
+}
+
+function closeSaveModal() {
+  if (saveModal) saveModal.style.display = "none";
+  currentSaveItem = null;
+  currentSaveElement = null;
+}
+
+saveModalClose?.addEventListener("click", closeSaveModal);
+saveModal?.addEventListener("click", (e) => {
+  if (e.target === saveModal) closeSaveModal();
+});
+
+saveActionDownload?.addEventListener("click", async () => {
+  if (!currentSaveItem) return;
+  const item = currentSaveItem;
+  const downloadUrl = item.videoUrl || item.imageUrl || (item.images && item.images[0]?.url) || item.cachedVideoUrl;
+
+  if (!downloadUrl) {
+    showToast("No downloadable media URL available");
+    closeSaveModal();
+    return;
+  }
+
+  closeSaveModal();
+  showToast("Downloading media... 📥");
+
+  try {
+    const res = await bridge.downloadMedia(downloadUrl, item.title || `reelit_${item.id}`);
+    if (res?.success) {
+      showToast(`Downloaded: ${res.filename} 📥`);
+    } else if (res?.fallbackUrl) {
+      const a = document.createElement("a");
+      a.href = res.fallbackUrl;
+      a.download = res.filename || "reelit_video.mp4";
+      a.target = "_blank";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      showToast("Download started 📥");
+    }
+  } catch (err) {
+    console.warn("Direct download failed, falling back to open URL:", err);
+    window.open(downloadUrl, "_blank");
+  }
+});
+
+saveActionReddit?.addEventListener("click", async () => {
+  if (!currentSaveItem) return;
+  const item = currentSaveItem;
+  const el = currentSaveElement;
+  const wasSaved = !!item.saved;
+
+  closeSaveModal();
+  showToast(wasSaved ? "Removing from Reddit... ⏳" : "Saving to Reddit... ⏳");
+
+  try {
+    const res = await bridge.saveToReddit(item.name || item.id, wasSaved);
+    if (res?.success) {
+      item.saved = !wasSaved;
+      if (el) {
+        const btn = el.querySelector(".save-btn");
+        if (btn) {
+          btn.classList.toggle("saved", item.saved);
+          const label = btn.querySelector(".action-label");
+          if (label) label.textContent = item.saved ? "Saved" : "Save";
+        }
+      }
+      showToast(item.saved ? "Saved to your Reddit account! 🔖" : "Removed from saved posts 🗑️");
+    }
+  } catch (err) {
+    showToast(`Reddit save failed: ${err.message}`);
+  }
 });
 
 // Show error modal
@@ -174,6 +301,14 @@ feedSelect.addEventListener("change", (e) => {
       feedSelect.value = "";
       val = "";
     }
+  }
+
+  // Subreddits don't support 'best' algorithm, switch to 'hot'
+  if (val && sortSelect.value === "best") {
+    sortSelect.value = "hot";
+  } else if (!val && sortSelect.value === "hot") {
+    // When returning to home feed, default to 'best'
+    sortSelect.value = "best";
   }
 
   feedController.loadInitialFeed({

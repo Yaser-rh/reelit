@@ -44,6 +44,7 @@ export function classifyPost(rawChild) {
     permalink: `https://reddit.com${post.permalink}`,
     createdUtc: post.created_utc,
     over18: post.over_18,
+    saved: !!post.saved,
     url: post.url
   };
 
@@ -190,7 +191,19 @@ export function classifyPost(rawChild) {
     };
   }
 
-  // Non-media or unsupported embed (text posts, external news articles, etc.)
+  // 6. Text-Only / Self Post
+  const isSelf = post.is_self || (!post.post_hint && !post.media && !post.preview?.images);
+  if (isSelf || post.selftext) {
+    return {
+      ...baseInfo,
+      mediaType: "text",
+      sourceType: "text_post",
+      selfText: post.selftext || "",
+      isText: true
+    };
+  }
+
+  // Non-media or unsupported external links
   return null;
 }
 
@@ -199,27 +212,40 @@ export function classifyPost(rawChild) {
  */
 export function buildRedditUrl({
   subreddit = "",
-  sort = "hot",
+  user = "",
+  sort = "best",
   t = "day",
   after = null,
   limit = 50
 } = {}) {
   const cleanSub = (subreddit || "").trim().replace(/^r\//i, "");
+  const cleanUser = (user || "").trim().replace(/^u\//i, "");
   let path = "";
 
-  if (cleanSub) {
-    // Subreddit feed: e.g. /r/popular, /r/funny
+  if (cleanUser) {
+    // Creator profile: /user/{username}/submitted
+    const effectiveSort = (sort === "best" || !sort) ? "new" : sort;
+    path = `/user/${encodeURIComponent(cleanUser)}/submitted`;
+    if (effectiveSort) {
+      path += `/${encodeURIComponent(effectiveSort)}`;
+    }
+  } else if (cleanSub) {
+    // Subreddit feed: e.g. /r/popular, /r/funny (subreddits don't have 'best', use 'hot' instead)
+    const effectiveSort = sort === "best" ? "hot" : sort;
     path = `/r/${encodeURIComponent(cleanSub)}`;
-    if (sort && sort !== "hot") {
-      path += `/${encodeURIComponent(sort)}`;
+    if (effectiveSort && effectiveSort !== "hot") {
+      path += `/${encodeURIComponent(effectiveSort)}`;
     }
   } else {
     // Personal home feed:
-    // Home hot feed is root '/', whereas 'new', 'top', 'rising' have dedicated subpaths
-    if (sort === "new" || sort === "top" || sort === "rising") {
-      path = `/${encodeURIComponent(sort)}`;
+    // 'best' is Reddit's default recommendation algorithm that rotates content fresh on each reload
+    const effectiveSort = sort || "best";
+    if (effectiveSort === "best") {
+      path = "/best";
+    } else if (effectiveSort === "new" || effectiveSort === "top" || effectiveSort === "rising") {
+      path = `/${encodeURIComponent(effectiveSort)}`;
     } else {
-      path = "";
+      path = ""; // hot is root
     }
   }
 

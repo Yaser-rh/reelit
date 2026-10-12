@@ -404,7 +404,7 @@ export class FeedController {
     const actionColumn = element.querySelector(".action-column");
     let soundBtn = element.querySelector(".sound-btn");
     if (!soundBtn && actionColumn && item.videoUrl) {
-      const shareBtn = element.querySelector(".share-btn");
+      const redditBtn = element.querySelector(".reddit-link-btn");
       soundBtn = document.createElement("button");
       soundBtn.className = "action-btn sound-btn";
       soundBtn.title = "Toggle Sound";
@@ -418,8 +418,8 @@ export class FeedController {
         e.stopPropagation();
         this.toggleMute(element);
       });
-      if (shareBtn) {
-        actionColumn.insertBefore(soundBtn, shareBtn);
+      if (redditBtn) {
+        actionColumn.insertBefore(soundBtn, redditBtn);
       } else {
         actionColumn.appendChild(soundBtn);
       }
@@ -467,6 +467,10 @@ export class FeedController {
         if (wasPlaying && element.dataset.index == this.currentIndex) {
           video.play().catch(() => {});
         }
+      }
+
+      if (video) {
+        this.wireScrubber(element, video);
       }
     } else if (item.embedUrl) {
       wrapper.innerHTML = `
@@ -685,11 +689,11 @@ export class FeedController {
 
       <!-- Action Buttons Column -->
       <div class="action-column">
-        <button class="action-btn like-btn" title="Upvote">
+        <button class="action-btn save-btn ${item.saved ? "saved" : ""}" title="Save Reel">
           <div class="action-icon-circle">
-            <svg viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
           </div>
-          <span class="action-label">${item.scoreFormatted}</span>
+          <span class="action-label">${item.saved ? "Saved" : "Save"}</span>
         </button>
 
         <a class="action-btn comments-btn" href="${item.permalink}" target="_blank" title="Reddit Comments">
@@ -708,12 +712,12 @@ export class FeedController {
           </button>
         ` : ""}
 
-        <button class="action-btn share-btn" title="Share Reel">
+        <a class="action-btn reddit-link-btn" href="${item.permalink}" target="_blank" title="Open on Reddit">
           <div class="action-icon-circle">
-            <svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92c0-1.61-1.31-2.92-2.92-2.92z"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12c0 5.52 4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm3.64 13c-.93 0-1.68-.75-1.68-1.68s.75-1.68 1.68-1.68 1.68.75 1.68 1.68-.75 1.68-1.68 1.68zm-7.28 0c-.93 0-1.68-.75-1.68-1.68s.75-1.68 1.68-1.68 1.68.75 1.68 1.68-.75 1.68-1.68 1.68z"/></svg>
           </div>
-          <span class="action-label">Share</span>
-        </button>
+          <span class="action-label">Reddit</span>
+        </a>
       </div>
 
       <!-- Information Overlay -->
@@ -724,6 +728,18 @@ export class FeedController {
         </div>
         <p class="post-title" title="Click to expand">${this.escapeHtml(item.title)}</p>
       </div>
+
+      <!-- Interactive Video Scrubber -->
+      ${item.videoUrl ? `
+        <div class="video-scrubber-container">
+          <div class="video-scrubber-track">
+            <div class="video-scrubber-buffered"></div>
+            <div class="video-scrubber-fill"></div>
+            <div class="video-scrubber-thumb"></div>
+          </div>
+          <div class="video-time-bubble">0:00 / 0:00</div>
+        </div>
+      ` : ""}
     `;
 
     // Video element initial configuration
@@ -759,31 +775,17 @@ export class FeedController {
     const video = el.querySelector("video");
     const audio = el.querySelector("audio");
     const soundBtn = el.querySelector(".sound-btn");
-    const likeBtn = el.querySelector(".like-btn");
-    const shareBtn = el.querySelector(".share-btn");
+    const saveBtn = el.querySelector(".save-btn");
     const subTag = el.querySelector(".subreddit-tag");
     const postTitle = el.querySelector(".post-title");
 
-    // Click on video to toggle Play/Pause
-    let lastTap = 0;
-    wrapper.addEventListener("click", (e) => {
-      // Don't trigger if clicked on gallery scroll
-      if (e.target.closest(".gallery-dots")) return;
-
-      const currentTime = new Date().getTime();
-      const tapLength = currentTime - lastTap;
-
-      if (tapLength < 300 && tapLength > 0) {
-        // Double tap -> Heart burst & Upvote
-        this.triggerHeartBurst(e.clientX, e.clientY, wrapper);
-        likeBtn?.classList.add("active");
-      } else {
-        // Single tap -> Play/Pause
-        if (item.videoUrl) {
-          this.toggleCurrentPlayback();
-        }
+    // Single click on media toggles Play/Pause
+    wrapper?.addEventListener("click", (e) => {
+      // Don't trigger if clicked on gallery scroll or buttons
+      if (e.target.closest(".gallery-dots") || e.target.closest(".gallery-nav-btn")) return;
+      if (item.videoUrl) {
+        this.toggleCurrentPlayback();
       }
-      lastTap = currentTime;
     });
 
     // Sound toggle
@@ -792,21 +794,19 @@ export class FeedController {
       this.toggleMute(el);
     });
 
-    // Like toggle
-    likeBtn?.addEventListener("click", (e) => {
+    // Save prompt (Download vs Save to Reddit)
+    saveBtn?.addEventListener("click", (e) => {
       e.stopPropagation();
-      likeBtn.classList.toggle("active");
+      this.onStatusUpdate({
+        openSaveModal: item,
+        element: el
+      });
     });
 
-    // Share link
-    shareBtn?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(item.permalink).then(() => {
-          this.onStatusUpdate({ toast: "Reddit post link copied!" });
-        });
-      }
-    });
+    // Wire video scrubber if video element is present
+    if (video) {
+      this.wireScrubber(el, video);
+    }
 
     // Click subreddit tag to filter
     subTag?.addEventListener("click", (e) => {
@@ -950,6 +950,124 @@ export class FeedController {
     heart.innerHTML = `<svg width="72" height="72" viewBox="0 0 24 24" fill="#ff4500"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>`;
     container.appendChild(heart);
     setTimeout(() => heart.remove(), 800);
+  }
+
+  wireScrubber(el, video) {
+    if (!el || !video) return;
+    let scrubberContainer = el.querySelector(".video-scrubber-container");
+    if (!scrubberContainer) {
+      scrubberContainer = document.createElement("div");
+      scrubberContainer.className = "video-scrubber-container";
+      scrubberContainer.innerHTML = `
+        <div class="video-scrubber-track">
+          <div class="video-scrubber-buffered"></div>
+          <div class="video-scrubber-fill"></div>
+          <div class="video-scrubber-thumb"></div>
+        </div>
+        <div class="video-time-bubble">0:00 / 0:00</div>
+      `;
+      el.appendChild(scrubberContainer);
+    }
+
+    const scrubberTrack = scrubberContainer.querySelector(".video-scrubber-track");
+    const scrubberFill = scrubberContainer.querySelector(".video-scrubber-fill");
+    const scrubberBuffered = scrubberContainer.querySelector(".video-scrubber-buffered");
+    const scrubberThumb = scrubberContainer.querySelector(".video-scrubber-thumb");
+    const timeBubble = scrubberContainer.querySelector(".video-time-bubble");
+
+    if (!scrubberTrack || scrubberTrack._wired) return;
+    scrubberTrack._wired = true;
+
+    let isDragging = false;
+
+    const formatTime = (sec) => {
+      if (isNaN(sec) || !isFinite(sec)) return "0:00";
+      const m = Math.floor(sec / 60);
+      const s = Math.floor(sec % 60);
+      return `${m}:${s < 10 ? "0" : ""}${s}`;
+    };
+
+    const updateProgress = () => {
+      if (isDragging || !video.duration) return;
+      const pct = (video.currentTime / video.duration) * 100;
+      if (scrubberFill) scrubberFill.style.width = `${pct}%`;
+      if (scrubberThumb) scrubberThumb.style.left = `${pct}%`;
+      if (timeBubble) {
+        timeBubble.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+      }
+    };
+
+    const updateBuffer = () => {
+      if (!video.duration || video.buffered.length === 0) return;
+      try {
+        const bufEnd = video.buffered.end(video.buffered.length - 1);
+        const bufPct = Math.min(100, (bufEnd / video.duration) * 100);
+        if (scrubberBuffered) scrubberBuffered.style.width = `${bufPct}%`;
+      } catch (_) {}
+    };
+
+    video.addEventListener("timeupdate", updateProgress);
+    video.addEventListener("progress", updateBuffer);
+    video.addEventListener("loadedmetadata", () => {
+      updateProgress();
+      updateBuffer();
+    });
+
+    const handleSeek = (clientX) => {
+      if (!scrubberTrack || !video.duration) return;
+      const rect = scrubberTrack.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      video.currentTime = ratio * video.duration;
+      if (scrubberFill) scrubberFill.style.width = `${ratio * 100}%`;
+      if (scrubberThumb) scrubberThumb.style.left = `${ratio * 100}%`;
+      if (timeBubble) {
+        timeBubble.textContent = `${formatTime(ratio * video.duration)} / ${formatTime(video.duration)}`;
+      }
+    };
+
+    scrubberTrack.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      isDragging = true;
+      scrubberContainer.classList.add("scrubbing");
+      handleSeek(e.clientX);
+
+      const onMouseMove = (moveEvent) => {
+        if (!isDragging) return;
+        moveEvent.preventDefault();
+        handleSeek(moveEvent.clientX);
+      };
+
+      const onMouseUp = () => {
+        if (isDragging) {
+          isDragging = false;
+          scrubberContainer.classList.remove("scrubbing");
+        }
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+      };
+
+      window.addEventListener("mousemove", onMouseMove);
+      window.addEventListener("mouseup", onMouseUp);
+    });
+
+    scrubberTrack.addEventListener("touchstart", (e) => {
+      e.stopPropagation();
+      isDragging = true;
+      scrubberContainer.classList.add("scrubbing");
+      if (e.touches[0]) handleSeek(e.touches[0].clientX);
+    }, { passive: true });
+
+    scrubberTrack.addEventListener("touchmove", (e) => {
+      if (isDragging && e.touches[0]) {
+        handleSeek(e.touches[0].clientX);
+      }
+    }, { passive: true });
+
+    scrubberTrack.addEventListener("touchend", (e) => {
+      e.stopPropagation();
+      isDragging = false;
+      scrubberContainer.classList.remove("scrubbing");
+    });
   }
 
   escapeHtml(str) {

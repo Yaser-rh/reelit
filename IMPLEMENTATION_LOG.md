@@ -83,7 +83,7 @@ Reelit runs as a local web application backed by an unpacked Manifest V3 Chrome 
 
 | File | Path | Description |
 | :--- | :--- | :--- |
-| **`manifest.json`** | `extension/manifest.json` | Manifest V3 configuration, permissions (`cookies`), host permissions (`reddit.com`, `redd.it`, `redgifs.com`), content script injection into `localhost`. Current version: `v1.2.0`. |
+| **`manifest.json`** | `extension/manifest.json` | Manifest V3 configuration, permissions (`cookies`, `downloads`), host permissions (`reddit.com`, `redd.it`, `redgifs.com`), content script injection into `localhost`. Current version: `v1.3.0`. |
 | **`background.js`** | `extension/background.js` | Service worker handling Reddit `.json` fetches with session cookies, automatic `old.reddit` <-> `www.reddit` fallback, and 4-strategy Redgifs resolution with strict timeouts. |
 | **`content.js`** | `extension/content.js` | Injected into the web page. Bridges `window.postMessage` from the frontend to `chrome.runtime.sendMessage` in the background worker. Emits `EXTENSION_READY` on load. |
 | **`index.html`** | `site/index.html` | Application shell: Top navigation bar, feed controls (subreddit & sort selector), status badge pill, audio toast, debug drawer, and `<meta name="referrer" content="no-referrer">`. |
@@ -107,7 +107,7 @@ Reelit runs as a local web application backed by an unpacked Manifest V3 Chrome 
 2. Toggle **Developer mode** ON (top-right).
 3. Click **Load unpacked** (top-left).
 4. Select the folder: `c:\Users\rh22\Desktop\pls\reelit3\extension`.
-5. Verify the extension **Reddit Reels Bridge** (v1.2.0) is enabled.
+5. Verify the extension **Reddit Reels Bridge** (v1.3.0) is enabled.
 6. Ensure you are logged into Reddit in this browser profile.
 
 ### Step 2: Start the Development Server
@@ -118,21 +118,39 @@ npm run dev
 
 ### Step 3: Open the Web App
 * Navigate to `http://localhost:5173/`.
-* The status indicator in the top right will turn green (`v1.2.0 • Logged In`).
-* Your personal feed will begin streaming immediately.
+* The status indicator in the top right will turn green (`v1.3.0 • Logged In`).
+* Your personal feed will begin streaming immediately with dynamic feed rotation.
 
 ---
 
-## 5. Next Steps / Future Roadmap
+## 5. Recent Enhancements (October 2026 – v1.3.0)
 
-1. **Android PWA Testing**:
-   - Install **Kiwi Browser**, **Titanium Browser**, or **Quetta Browser** on an Android device (these support Chrome MV3 extensions).
-   - Load the `extension/` folder unpacked inside the mobile browser.
-   - Serve Vite with `--host` and open the local network IP (e.g. `http://192.168.1.X:5173/`).
-   - Add to Home Screen as a standalone PWA.
-2. **Upvoting & Commenting Integration**:
-   - The UI includes upvote and comment buttons. The bridge can be extended to dispatch Reddit vote API calls (`/api/vote`) using the existing session cookie.
-3. **Save / Bookmark Feature**:
-   - Add local storage or Reddit save endpoint (`/api/save`) to bookmark reels.
-4. **Volume Slider / Memory**:
-   - Save the user's unmuted preference across browser sessions in `localStorage`.
+1. **Dynamic Feed Freshness & Rotation**:
+   - Switched Home feed default algorithm from static "Hot" to Reddit's dynamic "Best" recommendation engine (`/best.json`).
+   - Added cache-busting timestamp parameters (`&_t=...`) and `cache: "no-store"` in extension service worker fetches to prevent stale HTTP disk caching on refresh.
+2. **Automatic NSFW Age-Gate Bypass**:
+   - Extension automatically sets and maintains the `over18=1` cookie for `.reddit.com` in the browser session, bypassing adult-content interstitials without manual prompt clicks.
+3. **Interactive Video Control Bar & Scrubber**:
+   - Sleek bottom progress bar with buffered range, fill indicator, draggable thumb, and live timestamp indicator bubble (`mm:ss / mm:ss`).
+   - Supports both click-to-seek and drag-to-scrub with mouse and touch events across MP4 and HLS streams.
+4. **Cleaned UI / UX & Action Column**:
+   - Removed unnecessary Like and Share buttons.
+   - Streamlined action column: Save button (with active state), Comments link, Sound button, and direct Reddit link.
+   - Single tap on media is now an instantaneous play/pause toggle with zero detection lag.
+5. **Dual-Option Save / Download Modal**:
+   - Clicking Save prompts the user with two options:
+     - **Download Media**: Saves MP4/image directly to user's device via `chrome.downloads` (with fallback).
+     - **Save to Reddit Account**: Dispatches authenticated `/api/save` (or `/api/unsave`) with `modhash` via the extension bridge.
+
+---
+
+## 6. Next Steps / Future Roadmap
+
+1. **Creator Profile Video Feed (`u/author`)**:
+   - Clicking the author tag streams submitted media posts from `old.reddit.com/user/{username}/submitted.json` with error handling for private, suspended, or empty accounts.
+2. **Text-Only Posts (Centered Presentation)**:
+   - Centered card view for text-only submissions (`r/AskReddit`, `r/tifu`, stories) with typography styling and vertical scrolling.
+3. **Advanced Time Filtering for "Top" Sort**:
+   - Dropdown for Day, Week, Month, Year, All Time when "Top" sort is selected.
+4. **Android PWA Packaging**:
+   - Turn web app into installable PWA for Kiwi/Titanium browser.

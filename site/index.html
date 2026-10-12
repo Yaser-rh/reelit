@@ -22,7 +22,16 @@
           <span>Reelit</span>
         </div>
 
-        <div class="feed-controls">
+        <!-- Creator Profile indicator banner -->
+        <div class="creator-nav-banner" id="creator-banner" style="display: none;">
+          <button class="creator-back-btn" id="creator-back-btn" title="Back to Feed">
+            <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+            <span>Back</span>
+          </button>
+          <span class="creator-name" id="creator-banner-name">u/author</span>
+        </div>
+
+        <div class="feed-controls" id="feed-controls">
           <!-- Feed / Subreddit selector -->
           <div class="nav-pill" id="feed-selector-pill">
             <select id="feed-select">
@@ -39,10 +48,22 @@
           <!-- Sort selector -->
           <div class="nav-pill" id="sort-selector-pill">
             <select id="sort-select">
+              <option value="best" selected>Best</option>
               <option value="hot">Hot</option>
               <option value="top">Top</option>
               <option value="new">New</option>
               <option value="rising">Rising</option>
+            </select>
+          </div>
+
+          <!-- Time range selector (active when sort is 'top') -->
+          <div class="nav-pill" id="time-selector-pill" style="display: none;">
+            <select id="time-select">
+              <option value="day" selected>Today</option>
+              <option value="week">Week</option>
+              <option value="month">Month</option>
+              <option value="year">Year</option>
+              <option value="all">All Time</option>
             </select>
           </div>
 
@@ -66,6 +87,37 @@
       <div class="loading-screen" id="loading-screen">
         <div class="spinner"></div>
         <p id="loading-text">Connecting to Reddit Reels extension bridge...</p>
+      </div>
+
+      <!-- Save / Download Action Modal -->
+      <div class="save-modal-backdrop" id="save-modal" style="display: none;">
+        <div class="save-modal-card">
+          <div class="save-modal-header">
+            <h3>Save Reel</h3>
+            <button class="save-modal-close" id="save-modal-close" aria-label="Close">&times;</button>
+          </div>
+          <p class="save-modal-title" id="save-modal-post-title"></p>
+          <div class="save-modal-actions">
+            <button class="save-action-btn" id="save-action-download">
+              <div class="save-action-icon download-icon">
+                <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+              </div>
+              <div class="save-action-text">
+                <span class="save-action-heading">Download Media</span>
+                <span class="save-action-sub" id="save-download-sub">Save MP4 video or image to your device</span>
+              </div>
+            </button>
+            <button class="save-action-btn" id="save-action-reddit">
+              <div class="save-action-icon reddit-icon">
+                <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+              </div>
+              <div class="save-action-text">
+                <span class="save-action-heading" id="save-reddit-btn-heading">Save to Reddit Account</span>
+                <span class="save-action-sub" id="save-reddit-btn-sub">Bookmark this post on your Reddit profile</span>
+              </div>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Error / Setup Modal -->
