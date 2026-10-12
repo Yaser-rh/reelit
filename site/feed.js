@@ -2,6 +2,31 @@ import bridge from './bridge.js';
 import { fetchFeed } from './reddit.js';
 import Hls from 'hls.js';
 
+const SEEN_STORAGE_KEY = "reelit_seen_posts_v1";
+
+function getStoredSeenIds() {
+  try {
+    const raw = localStorage.getItem(SEEN_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        return new Set(arr);
+      }
+    }
+  } catch (_) {}
+  return new Set();
+}
+
+function saveStoredSeenIds(seenSet) {
+  try {
+    const arr = Array.from(seenSet);
+    if (arr.length > 1500) {
+      arr.splice(0, arr.length - 1500);
+    }
+    localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(arr));
+  } catch (_) {}
+}
+
 export class FeedController {
   constructor({ container, onStatusUpdate, onDebugLog }) {
     this.container = container;
@@ -15,6 +40,10 @@ export class FeedController {
     this.isLoading = false;
     this.hasMore = true;
     this.after = null;
+
+    // Viewed reels tracking for dynamic feed freshness & rotation
+    this.seenPostIds = getStoredSeenIds();
+    this._saveSeenTimer = null;
 
     // Feed filter parameters
     this.subreddit = "";
@@ -110,7 +139,12 @@ export class FeedController {
     if (this.currentIndex === index) return;
     this.currentIndex = index;
 
-    this.onDebugLog(`Active Reel: #${index} - ${this.items[index]?.title?.substring(0, 30)}...`);
+    const currentItem = this.items[index];
+    if (currentItem && currentItem.id) {
+      this.recordSeenItem(currentItem);
+    }
+
+    this.onDebugLog(`Active Reel: #${index} - ${currentItem?.title?.substring(0, 30)}...`);
 
     // Pause all other media & clean up distant HLS instances to prevent MediaSource decoder limits
     this.renderedElements.forEach((el, idx) => {
@@ -135,6 +169,18 @@ export class FeedController {
     // Infinite scroll check: near end
     if (index >= this.items.length - 4 && !this.isLoading && this.hasMore) {
       this.loadMore();
+    }
+  }
+
+  recordSeenItem(item) {
+    if (!item?.id) return;
+    if (!this.seenPostIds.has(item.id)) {
+      this.seenPostIds.add(item.id);
+      clearTimeout(this._saveSeenTimer);
+      this._saveSeenTimer = setTimeout(() => {
+        saveStoredSeenIds(this.seenPostIds);
+      }, 600);
+      this.onStatusUpdate({ seenCount: this.seenPostIds.size });
     }
   }
 
@@ -334,61 +380,41 @@ export class FeedController {
   }
 
   getDiagnosticBadgeHtml(item) {
-    let sourceLabel = "";
-    let sourceClass = "";
-    let soundLabel = "";
-    let soundClass = "";
+    if (item.isText || item.mediaType === "text") {
+      return `<div class="diag-pill source-text">📝 Text</div>`;
+    }
+    if (item.isGallery) {
+      return `<div class="diag-pill source-reddit">🖼️ Gallery (${item.images?.length || 0})</div>`;
+    }
+    if (item.mediaType === "image") {
+      return `<div class="diag-pill source-reddit">🖼️ Image</div>`;
+    }
 
-    // 1. Source Indicator
-    if (item.sourceType === "reddit_video" || item.mediaType === "reddit_video") {
-      sourceLabel = `🔴 Reddit Video`;
-      sourceClass = "source-reddit";
-    } else if (item.sourceType === "redgifs_direct") {
-      sourceLabel = `🎬 Redgifs HD`;
-      sourceClass = "source-redgifs";
+    let sourcePrefix = "🔴 Reddit";
+    let pillClass = "source-reddit";
+
+    if (item.sourceType === "redgifs_direct") {
+      sourcePrefix = "🎬 Redgifs HD";
+      pillClass = "source-redgifs";
     } else if (item.sourceType === "reddit_cache" || item.isIspFallback) {
-      sourceLabel = `🛡️ Reddit Cache (ISP Fallback)`;
-      sourceClass = "source-isp-cache";
+      sourcePrefix = "🛡️ Cache";
+      pillClass = "source-isp-cache";
     } else if (item.sourceType === "redgifs_iframe") {
-      sourceLabel = `📺 Redgifs Embed`;
-      sourceClass = "source-redgifs";
+      sourcePrefix = "📺 Redgifs";
+      pillClass = "source-redgifs";
     } else if (item.sourceType === "redgifs_pending") {
-      sourceLabel = `⏳ Resolving Redgifs...`;
-      sourceClass = "source-redgifs";
-    } else if (item.isGallery) {
-      sourceLabel = `🖼️ Gallery (${item.images?.length || 0})`;
-      sourceClass = "source-reddit";
-    } else if (item.mediaType === "image") {
-      sourceLabel = `🖼️ Image`;
-      sourceClass = "source-reddit";
-    } else if (item.isText || item.mediaType === "text") {
-      sourceLabel = `📝 Text Post`;
-      sourceClass = "source-text";
-    } else {
-      sourceLabel = `📹 Media`;
-      sourceClass = "source-reddit";
+      sourcePrefix = "⏳ Resolving";
+      pillClass = "source-redgifs";
     }
 
-    // 2. Sound Indicator
-    if (item.mediaType === "image" || item.isGallery || item.isText) {
-      soundLabel = ""; // No sound badge for images or text posts
-    } else if (item.hasAudio) {
-      if (this.isMuted) {
-        soundLabel = `🔇 Audio (Muted)`;
-        soundClass = "sound-muted";
-      } else {
-        soundLabel = `🔊 Audio ON`;
-        soundClass = "sound-active";
-      }
-    } else {
-      soundLabel = `🔇 Silent / No Audio`;
-      soundClass = "sound-none";
+    let audioSuffix = "• 🔇";
+    if (item.isGif || item.hasAudio === false) {
+      audioSuffix = "• 🔇";
+    } else if (!this.isMuted) {
+      audioSuffix = "• 🔊";
     }
 
-    return `
-      <div class="diag-pill ${sourceClass}">${sourceLabel}</div>
-      ${soundLabel ? `<div class="diag-pill ${soundClass}">${soundLabel}</div>` : ""}
-    `;
+    return `<div class="diag-pill ${pillClass}">${sourcePrefix} ${audioSuffix}</div>`;
   }
 
   updateItemBadge(element, item) {
@@ -408,7 +434,7 @@ export class FeedController {
     const actionColumn = element.querySelector(".action-column");
     let soundBtn = element.querySelector(".sound-btn");
     if (!soundBtn && actionColumn && item.videoUrl) {
-      const redditBtn = element.querySelector(".reddit-link-btn");
+      const statusBtn = element.querySelector(".bridge-status-btn");
       soundBtn = document.createElement("button");
       soundBtn.className = "action-btn sound-btn";
       soundBtn.title = "Toggle Sound";
@@ -422,8 +448,8 @@ export class FeedController {
         e.stopPropagation();
         this.toggleMute(element);
       });
-      if (redditBtn) {
-        actionColumn.insertBefore(soundBtn, redditBtn);
+      if (statusBtn) {
+        actionColumn.insertBefore(soundBtn, statusBtn);
       } else {
         actionColumn.appendChild(soundBtn);
       }
@@ -535,33 +561,64 @@ export class FeedController {
         after: this.after
       });
 
-      this.after = res.after;
-      if (!this.after) {
+      let currentAfter = res.after;
+      if (!currentAfter) {
         this.hasMore = false;
       }
+      this.after = currentAfter;
 
       this.onDebugLog(`Fetched ${res.rawCount} raw posts, classifying media...`);
 
-      const newEntries = [];
+      // Filter valid media posts
+      const isMediaItem = (item) => Boolean(
+        item.videoUrl ||
+        item.embedUrl ||
+        item.imageUrl ||
+        (item.images && item.images.length > 0) ||
+        item.cachedVideoUrl ||
+        item.redgifsId ||
+        item.isText
+      );
 
-      // Append ALL items immediately! Zero waiting, zero freeze!
-      for (const item of res.items) {
-        // Append item if valid video, embed, image, gallery, or text post
-        if (
-          item.videoUrl ||
-          item.embedUrl ||
-          item.imageUrl ||
-          (item.images && item.images.length > 0) ||
-          item.cachedVideoUrl ||
-          item.redgifsId ||
-          item.isText
-        ) {
-          const el = this.appendItem(item);
-          newEntries.push({ item, el });
+      let allCandidates = res.items.filter(isMediaItem);
+      let freshCandidates = allCandidates.filter((item) => !this.seenPostIds.has(item.id));
+
+      // Auto-paginate up to 3 batches if seen filter leaves fewer than 15 items
+      let pagePulls = 0;
+      while (freshCandidates.length < 15 && currentAfter && pagePulls < 3) {
+        pagePulls++;
+        this.onDebugLog(`Filtered ${allCandidates.length - freshCandidates.length} seen posts. Auto-fetching page ${pagePulls + 1}...`);
+        const nextRes = await fetchFeed({
+          subreddit: this.subreddit,
+          user: this.user,
+          sort: this.sort,
+          t: this.timeFilter,
+          after: currentAfter
+        });
+        currentAfter = nextRes.after;
+        this.after = currentAfter;
+        if (!currentAfter) {
+          this.hasMore = false;
         }
+        const nextMedia = nextRes.items.filter(isMediaItem);
+        allCandidates.push(...nextMedia);
+        const nextFresh = nextMedia.filter((item) => !this.seenPostIds.has(item.id));
+        freshCandidates.push(...nextFresh);
       }
 
-      this.onDebugLog(`Total loaded reels: ${this.items.length}`);
+      // If user has viewed all available posts, fallback to allCandidates so feed is never blank
+      const itemsToRender = freshCandidates.length > 0 ? freshCandidates : allCandidates;
+      if (freshCandidates.length === 0 && allCandidates.length > 0) {
+        this.onStatusUpdate({ toast: "Caught up on all new reels! Showing latest." });
+      }
+
+      const newEntries = [];
+      for (const item of itemsToRender) {
+        const el = this.appendItem(item);
+        newEntries.push({ item, el });
+      }
+
+      this.onDebugLog(`Total loaded reels: ${this.items.length} (${freshCandidates.length} fresh unseen)`);
       if (this.items.length > 0) {
         this.onStatusUpdate({ clearError: true });
       } else if (this.user && this.items.length === 0) {
@@ -744,12 +801,12 @@ export class FeedController {
           </button>
         ` : ""}
 
-        <a class="action-btn reddit-link-btn" href="${item.permalink}" target="_blank" title="Open on Reddit">
-          <div class="action-icon-circle">
-            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12c0 5.52 4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm3.64 13c-.93 0-1.68-.75-1.68-1.68s.75-1.68 1.68-1.68 1.68.75 1.68 1.68-.75 1.68-1.68 1.68zm-7.28 0c-.93 0-1.68-.75-1.68-1.68s.75-1.68 1.68-1.68 1.68.75 1.68 1.68-.75 1.68-1.68 1.68z"/></svg>
+        <button class="action-btn refresh-feed-btn" title="Refresh Feed (Get New Posts)">
+          <div class="action-icon-circle refresh-icon-circle">
+            <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
           </div>
-          <span class="action-label">Reddit</span>
-        </a>
+          <span class="action-label">Refresh</span>
+        </button>
       </div>
 
       <!-- Information Overlay (Visual media only, omitted for text posts) -->
@@ -835,6 +892,19 @@ export class FeedController {
         openSaveModal: item,
         element: el
       });
+    });
+
+    // Refresh feed button
+    const refreshBtn = el.querySelector(".refresh-feed-btn");
+    refreshBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const svg = refreshBtn.querySelector("svg");
+      if (svg) {
+        svg.classList.remove("spin-anim");
+        void svg.offsetWidth;
+        svg.classList.add("spin-anim");
+      }
+      this.onStatusUpdate({ refreshFeed: true });
     });
 
     // Wire video scrubber if video element is present
@@ -1141,5 +1211,27 @@ export class FeedController {
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  getSeenCount() {
+    return this.seenPostIds ? this.seenPostIds.size : 0;
+  }
+
+  clearSeenHistory() {
+    if (this.seenPostIds) {
+      this.seenPostIds.clear();
+      saveStoredSeenIds(this.seenPostIds);
+    }
+    this.onStatusUpdate({ seenCount: 0, toast: "Seen history cleared! 🧹" });
+  }
+
+  async refreshFeed() {
+    this.onStatusUpdate({ toast: "Fetching fresh reels... 🔄" });
+    await this.loadInitialFeed({
+      subreddit: this.subreddit,
+      user: this.user,
+      sort: this.sort,
+      timeFilter: this.timeFilter
+    });
   }
 }

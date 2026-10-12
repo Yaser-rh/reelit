@@ -152,13 +152,34 @@ npm run dev
    - Diagnostic badge: `[ 📝 Text Post ]`.
 8. **Top Sort Time-Range Filtering**:
    - When sorting by "Top" (in Home, Subreddits, or Creator Profiles), an interactive time selector dropdown appears: *Today*, *This Week*, *This Month*, *This Year*, and *All Time*.
+9. **UI/UX Overhaul & Custom Frosted-Glass Controls (v1.4.0)**:
+   - **Unified Top-Right Diagnostic Badge**: Consolidated video source and audio state into a single compact badge positioned discreetly at the top right of each reel (`🔴 Reddit • 🔊`, `🎬 Redgifs HD • 🔇`, `📝 Text`).
+   - **Minimalist Top Navigation Layout**:
+     - *Left*: Sort selector and Timeframe selector pills.
+     - *Center*: Subreddit / Feed dropdown selector or Creator Profile banner.
+     - *Right*: Reelit logo icon button with real-time connection status dot.
+   - **Delayed "Top" Sort Feed Loading**: Selecting "Top" sort does not trigger an immediate feed fetch; it reveals and opens the Timeframe dropdown so the user chooses the desired timeframe first.
+   - **Custom Frosted-Glass Dropdown Menus**: Replaced native browser `<select>` dropdowns with custom dark-mode frosted-glass menus featuring animated chevrons, active state highlights, and "+ Custom Subreddit" dialog integration.
+   - **Resolved Creator Profile Sorting Bug**: Fixed user submitted post sort endpoint in `site/reddit.js` to pass `?sort=new|hot|top&t=...` as query parameters, and restricted the Sort dropdown options to supported user profile sorts (`New`, `Hot`, `Top`).
+
+10. **Dynamic Feed Refresh & Status Popover (v1.5.0)**:
+    - **Refresh Feed Button in Action Column**: Replaced the bridge button in the reel action column with a dedicated Refresh button (`.refresh-feed-btn`) with smooth spin animation. Tapping it pulls completely fresh, unseen posts.
+    - **Seen Reel Tracking & Deduplication Engine**:
+      - As reels enter the viewport, their IDs are tracked in `seenPostIds` and persisted in `localStorage`.
+      - On feed refresh (and page reloads), seen reels are filtered out to ensure users never see repetitive content.
+      - If filtering leaves fewer than 20 items, auto-pagination pulls subsequent pages seamlessly to guarantee a full queue of fresh reels.
+    - **Reddit "Following" Sort Alignment**: Home feed sort options now strictly reflect Reddit's Following tab rules: **Best** and **New** (subreddits continue supporting *Hot*, *Top*, *New*, *Rising*).
+    - **Reelit Logo Status Dot & Popover**:
+      - Logo button features a real-time glowing status indicator (green = connected, red = disconnected).
+      - Clicking the logo opens an App Status & Account popover showing extension health, detected Reddit username (e.g. `u/username`), and seen reels count (with a "Reset" history button).
+      - Includes a "View Debug Logs" button; pressing the logo button again while logs are open immediately closes the debug console.
 
 ---
 
 ## 6. Next Steps / Future Roadmap
 
 1. **In-App Comments Drawer**:
-   - Slide-up bottom sheet showing top Reddit comments without opening a new tab.
+   - Slide-up bottom sheet showing top-level Reddit comments and discussion trees without leaving the app.
 2. **Media Filter Toggle**:
    - Toggle in header to switch between "All Posts", "Videos Only", or "Text Only".
 3. **Android PWA Packaging**:

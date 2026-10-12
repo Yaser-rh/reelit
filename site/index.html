@@ -13,67 +13,115 @@
     <div id="app">
       <!-- Top Navigation Header -->
       <header class="top-nav">
-        <div class="brand-badge">
-          <div class="brand-logo">
-            <svg viewBox="0 0 24 24">
-              <path d="M12 2C6.48 2 2 6.48 2 12c0 5.52 4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
-            </svg>
+        <!-- Left: Sort selector & Timeframe -->
+        <div class="nav-left">
+          <div class="custom-dropdown" id="sort-dropdown">
+            <button class="nav-pill dropdown-trigger" id="sort-dropdown-btn" type="button">
+              <span class="dropdown-selected-text" id="sort-selected-text">Best</span>
+              <svg class="dropdown-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+            </button>
+            <div class="dropdown-menu" id="sort-dropdown-menu">
+              <div class="dropdown-item active" data-value="best">Best</div>
+              <div class="dropdown-item" data-value="hot">Hot</div>
+              <div class="dropdown-item" data-value="top">Top</div>
+              <div class="dropdown-item" data-value="new">New</div>
+              <div class="dropdown-item" data-value="rising">Rising</div>
+            </div>
           </div>
-          <span>Reelit</span>
+
+          <div class="custom-dropdown" id="time-dropdown" style="display: none;">
+            <button class="nav-pill dropdown-trigger" id="time-dropdown-btn" type="button">
+              <span class="dropdown-selected-text" id="time-selected-text">Today</span>
+              <svg class="dropdown-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+            </button>
+            <div class="dropdown-menu" id="time-dropdown-menu">
+              <div class="dropdown-item active" data-value="day">Today (24h)</div>
+              <div class="dropdown-item" data-value="week">This Week</div>
+              <div class="dropdown-item" data-value="month">This Month</div>
+              <div class="dropdown-item" data-value="year">This Year</div>
+              <div class="dropdown-item" data-value="all">All Time</div>
+            </div>
+          </div>
         </div>
 
-        <!-- Creator Profile indicator banner -->
-        <div class="creator-nav-banner" id="creator-banner" style="display: none;">
-          <button class="creator-back-btn" id="creator-back-btn" title="Back to Feed">
-            <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-            <span>Back</span>
-          </button>
-          <span class="creator-name" id="creator-banner-name">u/author</span>
+        <!-- Center: Subreddit Selector or Creator Banner -->
+        <div class="nav-center">
+          <!-- Creator Profile indicator banner -->
+          <div class="creator-nav-banner" id="creator-banner" style="display: none;">
+            <button class="creator-back-btn" id="creator-back-btn" title="Back to Feed" type="button">
+              <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+              <span>Back</span>
+            </button>
+            <span class="creator-name" id="creator-banner-name">u/author</span>
+          </div>
+
+          <!-- Feed / Subreddit selector (Middle) -->
+          <div class="custom-dropdown" id="feed-dropdown">
+            <button class="nav-pill dropdown-trigger" id="feed-dropdown-btn" type="button">
+              <span class="dropdown-selected-text" id="feed-selected-text">Home (Your Feed)</span>
+              <svg class="dropdown-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+            </button>
+            <div class="dropdown-menu" id="feed-dropdown-menu">
+              <div class="dropdown-item active" data-value="">Home (Your Feed)</div>
+              <div class="dropdown-item" data-value="popular">r/popular</div>
+              <div class="dropdown-item" data-value="all">r/all</div>
+              <div class="dropdown-item" data-value="tiktokcringe">r/TikTokCringe</div>
+              <div class="dropdown-item" data-value="funny">r/funny</div>
+              <div class="dropdown-item" data-value="damnthatsinteresting">r/Damnthatsinteresting</div>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item custom-option" data-value="custom">+ Custom Subreddit</div>
+            </div>
+          </div>
         </div>
 
-        <div class="feed-controls" id="feed-controls">
-          <!-- Feed / Subreddit selector -->
-          <div class="nav-pill" id="feed-selector-pill">
-            <select id="feed-select">
-              <option value="">Home (Your Feed)</option>
-              <option value="popular">r/popular</option>
-              <option value="all">r/all</option>
-              <option value="tiktokcringe">r/TikTokCringe</option>
-              <option value="funny">r/funny</option>
-              <option value="damnthatsinteresting">r/Damnthatsinteresting</option>
-              <option value="custom">+ Custom Subreddit</option>
-            </select>
-          </div>
-
-          <!-- Sort selector -->
-          <div class="nav-pill" id="sort-selector-pill">
-            <select id="sort-select">
-              <option value="best" selected>Best</option>
-              <option value="hot">Hot</option>
-              <option value="top">Top</option>
-              <option value="new">New</option>
-              <option value="rising">Rising</option>
-            </select>
-          </div>
-
-          <!-- Time range selector (active when sort is 'top') -->
-          <div class="nav-pill" id="time-selector-pill" style="display: none;">
-            <select id="time-select">
-              <option value="day" selected>Today</option>
-              <option value="week">Week</option>
-              <option value="month">Month</option>
-              <option value="year">Year</option>
-              <option value="all">All Time</option>
-            </select>
-          </div>
-
-          <!-- Status badge & debug toggle -->
-          <div class="nav-pill" id="status-pill" title="Extension Bridge Status">
-            <span class="status-indicator" id="status-dot"></span>
-            <span id="status-text">Bridge</span>
+        <!-- Right: Reelit Logo with Status Indicator -->
+        <div class="nav-right">
+          <div class="brand-logo-wrapper" id="brand-logo-wrapper">
+            <button class="brand-logo" id="brand-logo-btn" type="button" title="App Status & Account">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 2C6.48 2 2 6.48 2 12c0 5.52 4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
+              </svg>
+              <span class="logo-status-dot" id="logo-status-dot"></span>
+            </button>
           </div>
         </div>
       </header>
+
+      <!-- Status & Account Popover Modal -->
+      <div class="status-popover" id="status-popover" style="display: none;">
+        <div class="status-popover-header">
+          <span class="status-popover-title">Reelit Status & Account</span>
+          <button class="status-popover-close" id="status-popover-close" aria-label="Close" type="button">&times;</button>
+        </div>
+        
+        <div class="status-card-section">
+          <div class="status-row">
+            <span class="status-row-label">Bridge Extension:</span>
+            <span class="status-row-value" id="popover-bridge-status">
+              <span class="status-indicator" id="popover-bridge-dot"></span>
+              <span id="popover-bridge-text">Connecting...</span>
+            </span>
+          </div>
+          <div class="status-row">
+            <span class="status-row-label">Reddit Account:</span>
+            <span class="status-row-value" id="popover-account-name">Checking...</span>
+          </div>
+          <div class="status-row">
+            <span class="status-row-label">Fresh Feed Filter:</span>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span class="status-row-value" id="popover-seen-count">0 seen</span>
+              <button class="popover-mini-btn" id="popover-clear-seen-btn" title="Reset seen posts history" type="button">Reset</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="status-popover-actions">
+          <button class="btn-popover-logs" id="open-logs-from-popover" type="button">
+            <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
+            <span>View Debug Logs</span>
+          </button>
+        </div>
+      </div>
 
       <!-- Audio state toast -->
       <div class="audio-toast" id="audio-toast">

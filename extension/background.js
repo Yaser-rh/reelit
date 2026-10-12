@@ -23,16 +23,40 @@ ensureOver18Cookie();
 if (chrome.runtime?.onInstalled) chrome.runtime.onInstalled.addListener(ensureOver18Cookie);
 if (chrome.runtime?.onStartup) chrome.runtime.onStartup.addListener(ensureOver18Cookie);
 
-// Check Reddit session cookies
+// Check Reddit session cookies and user info
+let cachedRedditUser = null;
+
 async function checkRedditSession() {
   await ensureOver18Cookie();
   try {
     const cookies = await chrome.cookies.getAll({ domain: "reddit.com" });
     const hasSession = cookies.some((c) => c.name === "reddit_session" || c.name === "token");
     const cookieNames = cookies.map((c) => c.name);
+    let username = cachedRedditUser;
+
+    if (hasSession && !username) {
+      try {
+        const meRes = await fetch("https://www.reddit.com/api/me.json", {
+          credentials: "include",
+          headers: { Accept: "application/json" }
+        });
+        if (meRes.ok) {
+          const meData = await meRes.json();
+          if (meData?.data?.name) {
+            username = meData.data.name;
+            cachedRedditUser = username;
+            if (meData?.data?.modhash) {
+              currentModhash = meData.data.modhash;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
     return {
       loggedIn: hasSession,
       hasSessionCookie: hasSession,
+      username: username ? `u/${username}` : (hasSession ? "Logged In" : "Guest"),
       cookieCount: cookies.length,
       cookieNames
     };

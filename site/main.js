@@ -11,34 +11,64 @@ const errorModal = document.getElementById("error-modal");
 const errorTitle = document.getElementById("error-title");
 const errorDescription = document.getElementById("error-description");
 const retryBtn = document.getElementById("retry-btn");
-const statusDot = document.getElementById("status-dot");
-const statusText = document.getElementById("status-text");
-const feedSelect = document.getElementById("feed-select");
-const sortSelect = document.getElementById("sort-select");
-const timeSelect = document.getElementById("time-select");
-const timeSelectorPill = document.getElementById("time-selector-pill");
-const feedSelectorPill = document.getElementById("feed-selector-pill");
+
+// Navigation & Custom Dropdowns
+const sortDropdown = document.getElementById("sort-dropdown");
+const sortDropdownBtn = document.getElementById("sort-dropdown-btn");
+const sortSelectedText = document.getElementById("sort-selected-text");
+const sortDropdownMenu = document.getElementById("sort-dropdown-menu");
+
+const timeDropdown = document.getElementById("time-dropdown");
+const timeDropdownBtn = document.getElementById("time-dropdown-btn");
+const timeSelectedText = document.getElementById("time-selected-text");
+const timeDropdownMenu = document.getElementById("time-dropdown-menu");
+
+const feedDropdown = document.getElementById("feed-dropdown");
+const feedDropdownBtn = document.getElementById("feed-dropdown-btn");
+const feedSelectedText = document.getElementById("feed-selected-text");
+const feedDropdownMenu = document.getElementById("feed-dropdown-menu");
+
 const creatorBanner = document.getElementById("creator-banner");
 const creatorBannerName = document.getElementById("creator-banner-name");
 const creatorBackBtn = document.getElementById("creator-back-btn");
+
+// Reelit Logo & Status Popover Elements
+const brandLogoWrapper = document.getElementById("brand-logo-wrapper");
+const brandLogoBtn = document.getElementById("brand-logo-btn");
+const logoStatusDot = document.getElementById("logo-status-dot");
+
+const statusPopover = document.getElementById("status-popover");
+const statusPopoverClose = document.getElementById("status-popover-close");
+const popoverBridgeDot = document.getElementById("popover-bridge-dot");
+const popoverBridgeText = document.getElementById("popover-bridge-text");
+const popoverAccountName = document.getElementById("popover-account-name");
+const popoverSeenCount = document.getElementById("popover-seen-count");
+const popoverClearSeenBtn = document.getElementById("popover-clear-seen-btn");
+const openLogsFromPopover = document.getElementById("open-logs-from-popover");
+
+// Toast & Debug Elements
 const audioToast = document.getElementById("audio-toast");
 const audioToastText = document.getElementById("audio-toast-text");
 const debugPanel = document.getElementById("debug-panel");
 const debugLogs = document.getElementById("debug-logs");
 const debugToggleBtn = document.getElementById("debug-toggle-btn");
 const closeDebugBtn = document.getElementById("close-debug-btn");
-const statusPill = document.getElementById("status-pill");
 
-let previousFeed = { subreddit: "", sort: "best", time: "day" };
+// App State
+let currentSubreddit = ""; // "" = Home (Following)
+let currentSort = "best";
+let currentTime = "day";
 let currentAuthor = "";
+let previousFeed = { subreddit: "", sort: "best", time: "day" };
+let currentSessionInfo = null;
 
 // Debug logging helper
 function logDebug(message) {
   const time = new Date().toLocaleTimeString();
   const entry = document.createElement("div");
   entry.textContent = `[${time}] ${message}`;
-  debugLogs.appendChild(entry);
-  debugPanel.scrollTop = debugPanel.scrollHeight;
+  debugLogs?.appendChild(entry);
+  if (debugPanel) debugPanel.scrollTop = debugPanel.scrollHeight;
   console.log(`[Reelit] ${message}`);
 }
 
@@ -73,7 +103,6 @@ const feedController = new FeedController({
 
     if (state.clearError) {
       hideError();
-      statusDot.className = "status-indicator connected";
     }
 
     if (state.isMuted !== undefined) {
@@ -92,31 +121,33 @@ const feedController = new FeedController({
       openAuthorProfile(state.viewAuthor);
     }
 
+    if (state.toggleDebug) {
+      toggleDebugPanel();
+    }
+
+    if (state.refreshFeed) {
+      feedController.refreshFeed();
+    }
+
+    if (state.seenCount !== undefined) {
+      if (popoverSeenCount) {
+        popoverSeenCount.textContent = `${state.seenCount} seen`;
+      }
+    }
+
     if (state.changeSubreddit) {
-      feedSelect.value = state.changeSubreddit;
-      // If not in standard list, add it
-      if (!feedSelect.value) {
-        const opt = document.createElement("option");
-        opt.value = state.changeSubreddit;
-        opt.textContent = `r/${state.changeSubreddit}`;
-        feedSelect.insertBefore(opt, feedSelect.lastElementChild);
-        feedSelect.value = state.changeSubreddit;
-      }
-      if (sortSelect.value === "best") {
-        sortSelect.value = "hot";
-      }
-      currentAuthor = "";
-      if (creatorBanner) creatorBanner.style.display = "none";
-      if (feedSelectorPill) feedSelectorPill.style.display = "flex";
-      feedController.loadInitialFeed({
-        subreddit: state.changeSubreddit,
-        sort: sortSelect.value,
-        timeFilter: timeSelect ? timeSelect.value : "day"
-      });
+      selectSubreddit(state.changeSubreddit);
     }
   },
   onDebugLog: (msg) => logDebug(msg)
 });
+
+// Update Popover & Status Dot
+function updatePopoverStats() {
+  if (popoverSeenCount) {
+    popoverSeenCount.textContent = `${feedController.getSeenCount()} seen`;
+  }
+}
 
 // Save Modal Elements & Interaction
 const saveModal = document.getElementById("save-modal");
@@ -238,15 +269,292 @@ saveActionReddit?.addEventListener("click", async () => {
   }
 });
 
+// Dropdown Management
+const allDropdowns = [sortDropdown, timeDropdown, feedDropdown].filter(Boolean);
+
+function closeAllDropdowns() {
+  allDropdowns.forEach((dd) => dd.classList.remove("open"));
+}
+
+function closeStatusPopover() {
+  if (statusPopover) statusPopover.style.display = "none";
+}
+
+function toggleStatusPopover() {
+  if (!statusPopover) return;
+  closeAllDropdowns();
+  if (statusPopover.style.display === "none" || !statusPopover.style.display) {
+    updatePopoverStats();
+    statusPopover.style.display = "flex";
+  } else {
+    statusPopover.style.display = "none";
+  }
+}
+
+function toggleDebugPanel() {
+  if (!debugPanel) return;
+  debugPanel.classList.toggle("open");
+}
+
+function closeDebugPanel() {
+  if (!debugPanel) return;
+  debugPanel.classList.remove("open");
+}
+
+// Global click-outside listener
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".custom-dropdown")) {
+    closeAllDropdowns();
+  }
+  if (!e.target.closest("#status-popover") && !e.target.closest("#brand-logo-wrapper")) {
+    closeStatusPopover();
+  }
+});
+
+// ESC key closes popover or debug panel
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeStatusPopover();
+    closeDebugPanel();
+    closeAllDropdowns();
+  }
+});
+
+function toggleDropdown(dropdownEl) {
+  if (!dropdownEl) return;
+  const isOpen = dropdownEl.classList.contains("open");
+  closeAllDropdowns();
+  closeStatusPopover();
+  if (!isOpen) {
+    dropdownEl.classList.add("open");
+  }
+}
+
+sortDropdownBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleDropdown(sortDropdown);
+});
+
+timeDropdownBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleDropdown(timeDropdown);
+});
+
+feedDropdownBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleDropdown(feedDropdown);
+});
+
+// Sort Dropdown Selection Handler
+sortDropdownMenu?.addEventListener("click", (e) => {
+  const item = e.target.closest(".dropdown-item");
+  if (!item) return;
+
+  const newSort = item.dataset.value;
+  if (!newSort) return;
+
+  // Update active styling
+  sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => el.classList.remove("active"));
+  item.classList.add("active");
+  if (sortSelectedText) sortSelectedText.textContent = item.textContent.trim();
+
+  closeAllDropdowns();
+
+  if (newSort === "top") {
+    // Top sort reveals and opens timeframe dropdown so user chooses time range first
+    currentSort = "top";
+    if (timeDropdown) {
+      timeDropdown.style.display = "inline-flex";
+      setTimeout(() => {
+        timeDropdown.classList.add("open");
+      }, 50);
+    }
+    return;
+  }
+
+  // Any other sort hides timeframe dropdown and triggers immediate feed reload
+  if (timeDropdown) {
+    timeDropdown.style.display = "none";
+  }
+  currentSort = newSort;
+
+  hideError();
+  feedController.loadInitialFeed({
+    user: currentAuthor,
+    subreddit: currentAuthor ? "" : currentSubreddit,
+    sort: currentSort,
+    timeFilter: currentTime
+  });
+});
+
+// Timeframe Dropdown Selection Handler
+timeDropdownMenu?.addEventListener("click", (e) => {
+  const item = e.target.closest(".dropdown-item");
+  if (!item) return;
+
+  const newTime = item.dataset.value;
+  if (!newTime) return;
+
+  timeDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => el.classList.remove("active"));
+  item.classList.add("active");
+  if (timeSelectedText) timeSelectedText.textContent = item.textContent.trim();
+
+  currentTime = newTime;
+  closeAllDropdowns();
+
+  hideError();
+  // Triggers Top sort feed load with chosen timeframe
+  feedController.loadInitialFeed({
+    user: currentAuthor,
+    subreddit: currentAuthor ? "" : currentSubreddit,
+    sort: "top",
+    timeFilter: currentTime
+  });
+});
+
+// Subreddit Dropdown Selection Handler
+feedDropdownMenu?.addEventListener("click", (e) => {
+  const item = e.target.closest(".dropdown-item");
+  if (!item) return;
+
+  let val = item.dataset.value;
+
+  if (val === "custom") {
+    closeAllDropdowns();
+    const custom = prompt("Enter subreddit name (e.g. 'damnthatsinteresting' or 'aww'):");
+    if (!custom || !custom.trim()) return;
+
+    const clean = custom.trim().replace(/^r\//i, "");
+    selectSubreddit(clean);
+    return;
+  }
+
+  selectSubreddit(val);
+});
+
+function selectSubreddit(subName) {
+  closeAllDropdowns();
+  const clean = (subName || "").trim().replace(/^r\//i, "");
+  currentSubreddit = clean;
+  currentAuthor = "";
+
+  if (creatorBanner) creatorBanner.style.display = "none";
+  if (feedDropdown) feedDropdown.style.display = "inline-flex";
+
+  // Check if item exists in feed dropdown menu, or create it
+  let matchingItem = null;
+  feedDropdownMenu?.querySelectorAll(".dropdown-item").forEach((el) => {
+    el.classList.remove("active");
+    if (el.dataset.value && el.dataset.value.toLowerCase() === clean.toLowerCase()) {
+      matchingItem = el;
+    } else if (!clean && el.dataset.value === "") {
+      matchingItem = el;
+    }
+  });
+
+  if (!matchingItem && clean) {
+    matchingItem = document.createElement("div");
+    matchingItem.className = "dropdown-item";
+    matchingItem.dataset.value = clean;
+    matchingItem.textContent = `r/${clean}`;
+    const divider = feedDropdownMenu?.querySelector(".dropdown-divider");
+    if (divider) {
+      feedDropdownMenu.insertBefore(matchingItem, divider);
+    } else if (feedDropdownMenu) {
+      feedDropdownMenu.appendChild(matchingItem);
+    }
+  }
+
+  if (matchingItem) {
+    matchingItem.classList.add("active");
+    if (feedSelectedText) feedSelectedText.textContent = matchingItem.textContent.trim();
+  } else if (feedSelectedText) {
+    feedSelectedText.textContent = clean ? `r/${clean}` : "Home (Your Feed)";
+  }
+
+  // Update sort dropdown options based on new feed mode (Home vs Subreddit)
+  updateSortDropdownOptions();
+
+  hideError();
+  feedController.loadInitialFeed({
+    subreddit: currentSubreddit,
+    sort: currentSort,
+    timeFilter: currentTime
+  });
+}
+
+/**
+ * Configure visible sort options based on current feed mode:
+ * 1. Home (Following): Only 'best' and 'new' (matching Reddit's Following options)
+ * 2. Subreddit: 'hot', 'top', 'new', 'rising' (subreddits have no 'best')
+ * 3. Creator Profile: 'new', 'hot', 'top'
+ */
+function updateSortDropdownOptions() {
+  if (!sortDropdownMenu) return;
+
+  if (currentAuthor) {
+    // Creator profile mode
+    sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
+      const isSupported = ["new", "hot", "top"].includes(el.dataset.value);
+      el.style.display = isSupported ? "" : "none";
+    });
+    if (currentSort === "best" || currentSort === "rising") {
+      setSortSelection("new");
+    } else {
+      setSortSelection(currentSort);
+    }
+  } else if (currentSubreddit) {
+    // Subreddit feed mode
+    sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
+      const isSupported = ["hot", "top", "new", "rising"].includes(el.dataset.value);
+      el.style.display = isSupported ? "" : "none";
+    });
+    if (currentSort === "best") {
+      setSortSelection("hot");
+    } else {
+      setSortSelection(currentSort);
+    }
+  } else {
+    // Home feed (Following) mode: only Best and New!
+    sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
+      const isSupported = ["best", "new"].includes(el.dataset.value);
+      el.style.display = isSupported ? "" : "none";
+    });
+    if (currentSort !== "best" && currentSort !== "new") {
+      setSortSelection("best");
+    } else {
+      setSortSelection(currentSort);
+    }
+  }
+}
+
+function setSortSelection(sortValue) {
+  currentSort = sortValue;
+  if (!sortDropdownMenu) return;
+
+  sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
+    const isTarget = el.dataset.value === sortValue;
+    el.classList.toggle("active", isTarget);
+    if (isTarget && sortSelectedText) {
+      sortSelectedText.textContent = el.textContent.trim();
+    }
+  });
+
+  if (timeDropdown) {
+    timeDropdown.style.display = sortValue === "top" ? "inline-flex" : "none";
+  }
+}
+
 // Creator Profile Navigation
 function openAuthorProfile(author) {
   if (!author) return;
   const clean = author.replace(/^u\//i, "");
+
   if (!currentAuthor) {
     previousFeed = {
-      subreddit: feedSelect.value,
-      sort: sortSelect.value,
-      time: timeSelect ? timeSelect.value : "day"
+      subreddit: currentSubreddit,
+      sort: currentSort,
+      time: currentTime
     };
   }
 
@@ -255,24 +563,17 @@ function openAuthorProfile(author) {
     creatorBanner.style.display = "flex";
     creatorBannerName.textContent = `u/${clean}`;
   }
-  if (feedSelectorPill) {
-    feedSelectorPill.style.display = "none";
+  if (feedDropdown) {
+    feedDropdown.style.display = "none";
   }
 
-  // Set sort to 'new' if currently 'best' (since creator profiles don't have 'best')
-  if (sortSelect.value === "best") {
-    sortSelect.value = "new";
-  }
-
-  if (timeSelectorPill) {
-    timeSelectorPill.style.display = sortSelect.value === "top" ? "flex" : "none";
-  }
+  updateSortDropdownOptions();
 
   hideError();
   feedController.loadInitialFeed({
     user: clean,
-    sort: sortSelect.value,
-    timeFilter: timeSelect ? timeSelect.value : "day"
+    sort: currentSort,
+    timeFilter: currentTime
   });
 }
 
@@ -281,22 +582,38 @@ function closeAuthorProfile() {
   if (creatorBanner) {
     creatorBanner.style.display = "none";
   }
-  if (feedSelectorPill) {
-    feedSelectorPill.style.display = "flex";
+  if (feedDropdown) {
+    feedDropdown.style.display = "inline-flex";
   }
 
-  feedSelect.value = previousFeed.subreddit;
-  sortSelect.value = previousFeed.sort;
-  if (timeSelect) timeSelect.value = previousFeed.time;
-  if (timeSelectorPill) {
-    timeSelectorPill.style.display = sortSelect.value === "top" ? "flex" : "none";
+  currentSubreddit = previousFeed.subreddit;
+  updateSortDropdownOptions();
+  setSortSelection(previousFeed.sort);
+
+  if (timeDropdownMenu) {
+    timeDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
+      const isTarget = el.dataset.value === previousFeed.time;
+      el.classList.toggle("active", isTarget);
+      if (isTarget && timeSelectedText) {
+        timeSelectedText.textContent = el.textContent.trim();
+      }
+    });
   }
+  currentTime = previousFeed.time;
+
+  // Update feed dropdown active item
+  feedDropdownMenu?.querySelectorAll(".dropdown-item").forEach((el) => {
+    el.classList.toggle("active", el.dataset.value === currentSubreddit);
+    if (el.dataset.value === currentSubreddit && feedSelectedText) {
+      feedSelectedText.textContent = el.textContent.trim();
+    }
+  });
 
   hideError();
   feedController.loadInitialFeed({
-    subreddit: previousFeed.subreddit,
-    sort: previousFeed.sort,
-    timeFilter: previousFeed.time
+    subreddit: currentSubreddit,
+    sort: currentSort,
+    timeFilter: currentTime
   });
 }
 
@@ -308,7 +625,6 @@ function showError(title, desc) {
   errorModal.style.display = "flex";
   errorTitle.textContent = title;
   errorDescription.innerHTML = desc;
-  statusDot.className = "status-indicator error";
 }
 
 // Hide error modal
@@ -316,41 +632,82 @@ function hideError() {
   errorModal.style.display = "none";
 }
 
+// Reelit Logo Button: Toggles status popover, or closes logs if open
+brandLogoBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  // If debug logs panel is currently open, pressing logo closes it!
+  if (debugPanel?.classList.contains("open")) {
+    closeDebugPanel();
+    return;
+  }
+  toggleStatusPopover();
+});
+
+statusPopoverClose?.addEventListener("click", closeStatusPopover);
+
+openLogsFromPopover?.addEventListener("click", () => {
+  closeStatusPopover();
+  toggleDebugPanel();
+});
+
+popoverClearSeenBtn?.addEventListener("click", () => {
+  feedController.clearSeenHistory();
+  if (popoverSeenCount) popoverSeenCount.textContent = "0 seen";
+});
+
 // Bridge status listener
 bridge.onStatusChange((status, details) => {
   logDebug(`Bridge status changed: ${status}`);
 
+  const ver = details?.version || "1.3.0";
+
   if (status === "connected") {
-    statusDot.className = "status-indicator connected";
-    statusText.textContent = "Connected";
     hideError();
 
-    // Query session cookies from background script
+    if (logoStatusDot) {
+      logoStatusDot.className = "logo-status-dot connected";
+    }
+    if (popoverBridgeDot) {
+      popoverBridgeDot.className = "status-indicator connected";
+    }
+    if (popoverBridgeText) {
+      popoverBridgeText.textContent = `v${ver} Connected`;
+    }
+
+    // Query session cookies and username from background script
     checkRedditSession().then((session) => {
-      const ver = details?.version || "1.1.0";
+      currentSessionInfo = session;
+      if (popoverAccountName) {
+        popoverAccountName.textContent = session?.username || (session?.loggedIn ? "Logged In" : "Guest Mode");
+      }
       if (session?.loggedIn) {
-        logDebug(`Reddit session: Logged in (${session.cookieCount} cookies detected). Bridge version: v${ver}`);
-        statusText.textContent = `v${ver} • Logged In`;
-        statusPill.title = `Bridge v${ver} • Reddit Session: Active & Connected`;
+        logDebug(`Reddit session: Logged in as ${session.username || "user"} (${session.cookieCount} cookies detected). Bridge version: v${ver}`);
       } else {
         logDebug(`Reddit session: Guest mode. Bridge version: v${ver}`);
-        statusText.textContent = `v${ver} • Guest`;
-        statusPill.title = `Bridge v${ver} • Reddit Session: Guest`;
       }
     });
 
-    // If feed hasn't been loaded yet, load it now!
+    // If feed hasn't been loaded yet, initialize
     if (feedController.items.length === 0 && !feedController.isLoading) {
       logDebug("Extension ready. Initializing Reddit feed...");
+      updateSortDropdownOptions();
       feedController.loadInitialFeed({
-        subreddit: feedSelect.value,
-        sort: sortSelect.value,
-        timeFilter: timeSelect ? timeSelect.value : "day"
+        subreddit: currentSubreddit,
+        sort: currentSort,
+        timeFilter: currentTime
       });
     }
   } else if (status === "disconnected") {
-    statusDot.className = "status-indicator error";
-    statusText.textContent = "Missing";
+    if (logoStatusDot) {
+      logoStatusDot.className = "logo-status-dot error";
+    }
+    if (popoverBridgeDot) {
+      popoverBridgeDot.className = "status-indicator error";
+    }
+    if (popoverBridgeText) {
+      popoverBridgeText.textContent = "Disconnected";
+    }
+
     showError(
       "Chrome Extension Not Found",
       "The <strong>Reddit Reels Bridge</strong> extension must be loaded unpacked in your browser.<br/><br/>" +
@@ -360,78 +717,19 @@ bridge.onStatusChange((status, details) => {
       "4. Refresh this page."
     );
   } else {
-    statusDot.className = "status-indicator";
-    statusText.textContent = "Connecting";
-  }
-});
-
-// Event Listeners for Feed & Sort Controls
-feedSelect.addEventListener("change", (e) => {
-  hideError();
-  let val = e.target.value;
-  if (val === "custom") {
-    const custom = prompt("Enter subreddit name (e.g. 'damnthatsinteresting' or 'aww'):");
-    if (custom && custom.trim()) {
-      const clean = custom.trim().replace(/^r\//i, "");
-      const opt = document.createElement("option");
-      opt.value = clean;
-      opt.textContent = `r/${clean}`;
-      feedSelect.insertBefore(opt, feedSelect.lastElementChild);
-      feedSelect.value = clean;
-      val = clean;
-    } else {
-      feedSelect.value = "";
-      val = "";
+    if (logoStatusDot) {
+      logoStatusDot.className = "logo-status-dot";
+    }
+    if (popoverBridgeDot) {
+      popoverBridgeDot.className = "status-indicator";
+    }
+    if (popoverBridgeText) {
+      popoverBridgeText.textContent = "Connecting...";
     }
   }
-
-  // Subreddits don't support 'best' algorithm, switch to 'hot'
-  if (val && sortSelect.value === "best") {
-    sortSelect.value = "hot";
-  } else if (!val && sortSelect.value === "hot") {
-    // When returning to home feed, default to 'best'
-    sortSelect.value = "best";
-  }
-
-  currentAuthor = "";
-  if (creatorBanner) creatorBanner.style.display = "none";
-  if (feedSelectorPill) feedSelectorPill.style.display = "flex";
-  if (timeSelectorPill) {
-    timeSelectorPill.style.display = sortSelect.value === "top" ? "flex" : "none";
-  }
-
-  feedController.loadInitialFeed({
-    subreddit: val,
-    sort: sortSelect.value,
-    timeFilter: timeSelect ? timeSelect.value : "day"
-  });
 });
 
-sortSelect.addEventListener("change", (e) => {
-  hideError();
-  const sortVal = e.target.value;
-  if (timeSelectorPill) {
-    timeSelectorPill.style.display = sortVal === "top" ? "flex" : "none";
-  }
-  feedController.loadInitialFeed({
-    user: currentAuthor,
-    subreddit: currentAuthor ? "" : feedSelect.value,
-    sort: sortVal,
-    timeFilter: timeSelect ? timeSelect.value : "day"
-  });
-});
-
-timeSelect?.addEventListener("change", (e) => {
-  hideError();
-  feedController.loadInitialFeed({
-    user: currentAuthor,
-    subreddit: currentAuthor ? "" : feedSelect.value,
-    sort: sortSelect.value,
-    timeFilter: e.target.value
-  });
-});
-
-retryBtn.addEventListener("click", () => {
+retryBtn?.addEventListener("click", () => {
   hideError();
   loadingScreen.style.display = "flex";
   loadingText.textContent = "Re-checking extension bridge...";
@@ -439,16 +737,16 @@ retryBtn.addEventListener("click", () => {
 });
 
 // Debug panel controls
-statusPill.addEventListener("click", () => {
-  debugPanel.classList.toggle("open");
+debugToggleBtn?.addEventListener("click", () => {
+  toggleDebugPanel();
 });
 
-debugToggleBtn.addEventListener("click", () => {
-  debugPanel.classList.toggle("open");
+closeDebugBtn?.addEventListener("click", () => {
+  closeDebugPanel();
 });
 
-closeDebugBtn.addEventListener("click", () => {
-  debugPanel.classList.remove("open");
-});
+// Initial sort dropdown options setup
+updateSortDropdownOptions();
+updatePopoverStats();
 
 logDebug("Reddit Reels web app initialized.");

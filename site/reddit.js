@@ -223,13 +223,20 @@ export function buildRedditUrl({
   let path = "";
 
   if (cleanUser) {
-    // Creator profile: /user/{username}/submitted
+    // Creator profile submitted posts: Reddit API expects sort as query param (?sort=new|hot|top)
     const effectiveSort = (sort === "best" || !sort) ? "new" : sort;
-    path = `/user/${encodeURIComponent(cleanUser)}/submitted`;
-    if (effectiveSort) {
-      path += `/${encodeURIComponent(effectiveSort)}`;
+    let url = `https://old.reddit.com/user/${encodeURIComponent(cleanUser)}/submitted/.json?limit=${limit}&raw_json=1&sort=${encodeURIComponent(effectiveSort)}`;
+    if (effectiveSort === "top" && t) {
+      url += `&t=${encodeURIComponent(t)}`;
     }
-  } else if (cleanSub) {
+    if (after) {
+      url += `&after=${encodeURIComponent(after)}`;
+    }
+    return url;
+  }
+
+  // Subreddit or Home feed:
+  if (cleanSub) {
     // Subreddit feed: e.g. /r/popular, /r/funny (subreddits don't have 'best', use 'hot' instead)
     const effectiveSort = sort === "best" ? "hot" : sort;
     path = `/r/${encodeURIComponent(cleanSub)}`;
