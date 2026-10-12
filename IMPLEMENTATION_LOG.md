@@ -214,11 +214,25 @@ npm run dev
 
 ---
 
+14. **Standalone Android PWA & GitHub Pages Hosting (v1.9.0)**:
+    - **PWA Packaging via `vite-plugin-pwa`**:
+      - Configured standalone PWA manifest with `display: "standalone"`, `orientation: "portrait"`, and solid black theme (`theme_color: "#000000"`, `background_color: "#000000"`).
+      - Set base path to `/reelit/` (`https://yaser-rh.github.io/reelit/`) with matching manifest scope and start URL.
+      - Generated full icon suite in `site/public/`: vector `favicon.svg`, `pwa-192x192.png`, `pwa-512x512.png` (with `any maskable` purpose), and `apple-touch-icon.png`.
+    - **App-Shell Only Service Worker**:
+      - Restricted Workbox precaching strictly to local static build assets (`**/*.{js,css,html,ico,png,svg}`).
+      - No runtime caching for external domains, ensuring Reddit API and Redgifs media streams bypass the service worker without intercepting cookies or Range requests.
+    - **Extension Origin Compatibility for Android Titanium Browser**:
+      - Updated `extension/manifest.json` (`v1.5.0`) content scripts to match `https://yaser-rh.github.io/*` and `https://*.github.io/*`.
+      - Allows the unpacked extension to bridge session cookies and CORS requests seamlessly on Android when using Chromium extension-capable browsers (Titanium Browser / Kiwi).
+    - **Automated GitHub Pages Deployment**:
+      - Added `.github/workflows/deploy.yml` for automated GitHub Actions build and deployment on push to `main`.
+
+---
+
 ## 6. Next Steps / Future Roadmap
 
 1. **In-App Comments Drawer**:
    - Slide-up bottom sheet showing top-level Reddit comments and discussion trees without leaving the app.
 2. **Media Filter Toggle**:
    - Toggle in header to switch between "All Posts", "Videos Only", or "Text Only".
-3. **Android PWA Packaging**:
-   - Add web app manifest and service worker for standalone mobile PWA.

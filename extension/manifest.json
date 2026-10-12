@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Reddit Reels Bridge",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Extension proxy bridge for Reddit Reels feed",
   "permissions": [
     "cookies",
@@ -22,7 +22,9 @@
         "http://127.0.0.1/*",
         "https://localhost/*",
         "https://127.0.0.1/*",
-        "http://*.local/*"
+        "http://*.local/*",
+        "https://yaser-rh.github.io/*",
+        "https://*.github.io/*"
       ],
       "js": ["content.js"],
       "run_at": "document_start"
