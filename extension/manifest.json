@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Reddit Reels Bridge",
+  "version": "1.2.0",
+  "description": "Extension proxy bridge for Reddit Reels feed",
+  "permissions": [
+    "cookies"
+  ],
+  "host_permissions": [
+    "*://*.reddit.com/*",
+    "*://*.redd.it/*",
+    "*://*.redgifs.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "https://localhost/*",
+        "https://127.0.0.1/*",
+        "http://*.local/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

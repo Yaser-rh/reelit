@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Reddit Reels - TikTok Vertical Feed</title>
+    <meta name="description" content="Personal TikTok-style vertical Reddit reel feed proxy via browser extension" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Top Navigation Header -->
+      <header class="top-nav">
+        <div class="brand-badge">
+          <div class="brand-logo">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 2C6.48 2 2 6.48 2 12c0 5.52 4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
+            </svg>
+          </div>
+          <span>Reelit</span>
+        </div>
+
+        <div class="feed-controls">
+          <!-- Feed / Subreddit selector -->
+          <div class="nav-pill" id="feed-selector-pill">
+            <select id="feed-select">
+              <option value="">Home (Your Feed)</option>
+              <option value="popular">r/popular</option>
+              <option value="all">r/all</option>
+              <option value="tiktokcringe">r/TikTokCringe</option>
+              <option value="funny">r/funny</option>
+              <option value="damnthatsinteresting">r/Damnthatsinteresting</option>
+              <option value="custom">+ Custom Subreddit</option>
+            </select>
+          </div>
+
+          <!-- Sort selector -->
+          <div class="nav-pill" id="sort-selector-pill">
+            <select id="sort-select">
+              <option value="hot">Hot</option>
+              <option value="top">Top</option>
+              <option value="new">New</option>
+              <option value="rising">Rising</option>
+            </select>
+          </div>
+
+          <!-- Status badge & debug toggle -->
+          <div class="nav-pill" id="status-pill" title="Extension Bridge Status">
+            <span class="status-indicator" id="status-dot"></span>
+            <span id="status-text">Bridge</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Audio state toast -->
+      <div class="audio-toast" id="audio-toast">
+        <span id="audio-toast-text">Muted</span>
+      </div>
+
+      <!-- Feed Container -->
+      <main class="feed-viewport" id="feed"></main>
+
+      <!-- Loading overlay -->
+      <div class="loading-screen" id="loading-screen">
+        <div class="spinner"></div>
+        <p id="loading-text">Connecting to Reddit Reels extension bridge...</p>
+      </div>
+
+      <!-- Error / Setup Modal -->
+      <div class="error-modal" id="error-modal" style="display: none;">
+        <h2 class="error-title" id="error-title">Extension Bridge Required</h2>
+        <p class="error-desc" id="error-description">
+          Make sure the <strong>Reddit Reels Bridge</strong> extension is loaded unpacked in Chrome and active.
+        </p>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn-primary" id="retry-btn">Retry Connection</button>
+          <button class="btn-secondary" id="debug-toggle-btn">Toggle Logs</button>
+        </div>
+      </div>
+
+      <!-- Debug Console Drawer -->
+      <div class="debug-panel" id="debug-panel">
+        <div class="debug-header">
+          <span>Bridge & Feed Debug Logs</span>
+          <button class="btn-secondary" id="close-debug-btn" style="padding: 2px 8px; font-size: 0.7rem;">Close</button>
+        </div>
+        <div id="debug-logs"></div>
+      </div>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

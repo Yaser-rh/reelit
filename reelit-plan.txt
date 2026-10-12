@@ -1,0 +1,176 @@
+**Implementation Plan: Reddit Reels (Extension Proxy + Local Site → Later PWA)**
+
+Goal: Personal TikTok-style vertical Reddit feed.  
+Windows testing = normal local website + unpacked Chrome extension.  
+Android later = same site turned into a PWA, installed to home screen inside Titanium (or Quetta) Browser with the same extension loaded unpacked.
+
+---
+
+### 1. High-Level Architecture
+
+```
+[Website / later PWA]
+        │
+        │  window.postMessage  (request ID + type + payload)
+        ▼
+[Content Script]  ← injected into the site origin
+        │
+        │  chrome.runtime.sendMessage
+        ▼
+[Background Service Worker]
+        │
+        │  fetch with credentials: 'include'  (or explicit Cookie header)
+        ▼
+Reddit .json / Redgifs watch page
+```
+
+All Reddit and Redgifs network calls happen only inside the extension background script.
+
+---
+
+### 2. Project Structure
+
+```
+reddit-reels/
+├── extension/
+│   ├── manifest.json
+│   ├── background.js
+│   └── content.js
+├── site/                     ← Vite project (normal website first)
+│   ├── index.html
+│   ├── main.js
+│   ├── bridge.js
+│   ├── reddit.js
+│   ├── feed.js
+│   ├── styles.css
+│   └── vite.config.js
+└── README.md
+```
+
+---
+
+### 3. Phase 1 – Extension (Manifest V3)
+
+**manifest.json**
+- `manifest_version`: 3
+- `permissions`: `["cookies"]`
+- `host_permissions`: `["*://*.reddit.com/*", "*://*.redd.it/*", "*://*.redgifs.com/*"]`
+- `background`: `{ "service_worker": "background.js" }`
+- `content_scripts`: inject `content.js` into:
+  - `http://localhost:*/*`
+  - `http://127.0.0.1:*/*`
+  - later the origin you use for the PWA
+
+**content.js**
+- Listen for `window.postMessage` from the page.
+- Forward to `chrome.runtime.sendMessage`.
+- Relay the response back via `window.postMessage`.
+- On injection, immediately post a `{ type: "EXTENSION_READY" }` message so the page knows the bridge is alive.
+
+**background.js**
+- Listen for messages.
+- Two main handlers:
+  1. `FETCH_REDDIT` – `fetch(url, { credentials: "include", headers: { "User-Agent": "..." } })`
+  2. `RESOLVE_REDGIFS` – fetch the watch page, run multi-strategy extraction, return direct `.mp4` URL (or error).
+- Always `return true` for async responses.
+- Validate Redgifs result is actually video content before returning it.
+
+---
+
+### 4. Phase 2 – Local Website (Windows Testing)
+
+Use Vite (vanilla JS, no framework).
+
+**bridge.js**
+- Generate unique request IDs.
+- `send(type, payload)` → returns a Promise.
+- Wait for `EXTENSION_READY` before allowing requests (or retry).
+- Global message listener that resolves pending promises.
+
+**reddit.js**
+- `fetchFeed(after)` → calls bridge with `FETCH_REDDIT` and URL  
+  `https://old.reddit.com/.json?limit=50&raw_json=1` (+ `&after=...` when paginating).
+- Parse `data.data.children` and `data.data.after`.
+- `classifyPost(post)` returns media descriptor:
+  - gallery
+  - image (`post_hint === "image"`)
+  - reddit video (`post_hint === "hosted:video"` → `fallback_url`)
+  - redgifs (`domain === "redgifs.com"`)
+
+**feed.js + styles.css**
+- `.feed` container: `height: 100dvh; overflow-y: scroll; scroll-snap-type: y mandatory;`
+- Each `.feed-item`: `height: 100dvh; scroll-snap-align: start;`
+- Media: `<video>` or `<img>` with `object-fit: contain` (or `cover`).
+- IntersectionObserver (≥60% visible → play + preload next 2–3; leave → pause + reset).
+- Infinite scroll: near bottom → `loadMore()`.
+- Only append item if media resolves successfully.
+
+**index.html**
+- Single `#feed` div.
+- Optional debug panel showing extension status and last error.
+
+---
+
+### 5. Phase 3 – Redgifs Resolver (inside background.js)
+
+Multi-strategy, in order:
+1. Fetch watch page HTML → regex for `"videoUrl":"..."` or `https://files.redgifs.com/...mp4`.
+2. Construct from gif ID: `https://files.redgifs.com/{id}.mp4` and `...-mobile.mp4`.
+3. Optional API fallback (may be rate-limited or dead).
+
+Validate response `Content-Type` contains `video` before returning the URL.  
+If all fail, return a clear error so the UI can skip or open the original URL.
+
+---
+
+### 6. Phase 4 – Windows Testing Checklist
+
+1. Load unpacked extension in Chrome (`chrome://extensions` → Developer mode → Load unpacked).
+2. Run `npm run dev` in the `site/` folder (Vite default `http://localhost:5173`).
+3. Open the site.
+4. Confirm content script injects and `EXTENSION_READY` arrives.
+5. Confirm feed loads (you must be logged into Reddit in the same Chrome profile).
+6. Test scroll-snap, autoplay/pause, infinite scroll, Redgifs items, galleries, images.
+7. Force a 403 (log out of Reddit) and verify the UI shows a clear “re-login” message.
+
+---
+
+### 7. Phase 5 – Turn into PWA (after Windows testing is solid)
+
+- Add `vite-plugin-pwa`.
+- Configure manifest: name, `display: "standalone"`, `orientation: "portrait"`, icons, black theme.
+- Service worker: cache only the shell (HTML/CSS/JS) and images. Do **not** rely on it for video (range-request issues).
+- Update extension `content_scripts` matches to include the final origin you will install from.
+- On Android (Titanium):
+  - Load the same unpacked extension.
+  - Open the site (served once from LAN or temporary host).
+  - Add to Home screen.
+  - Test the full bridge + feed flow from the home-screen icon.
+
+---
+
+### 8. Key Caveats for This Approach
+
+- Extension must stay enabled (Developer mode on for unpacked).
+- Content script match pattern must exactly cover the origin used for testing and later for the installed PWA.
+- Handshake (`EXTENSION_READY`) is mandatory; first request can otherwise race.
+- MV3 service worker can idle; keep background logic simple and use proper async message handling.
+- Reddit session cookie must exist in the same browser profile.
+- Redgifs extraction will need occasional maintenance.
+- Reddit hosted video is usually silent (`fallback_url`); unmute-on-tap is the practical MVP.
+- On Android the installed “PWA” is usually a home-screen shortcut running inside the browser, not a fully independent WebAPK.
+
+---
+
+### 9. Build Order/ Implementation
+
+1. Extension scaffold (`manifest.json`, `content.js` bridge, `background.js` stub).
+2. Vite site + `bridge.js` + ready handshake.
+3. Reddit fetch + classifier.
+4. Basic scroll-snap feed UI + IntersectionObserver.
+5. Redgifs multi-strategy resolver.
+6. Infinite scroll + preloading.
+7. Error states (no extension, not logged in, resolve fail).
+8. Windows testing pass.
+9. (Later) PWA plugin + Android home-screen testing in Titanium.
+
