@@ -1,133 +1,102 @@
-# Reelit: Reddit Reels (TikTok-Style Vertical Feed)
+# 🎬 Reelit: Reddit Reels (TikTok-Style Vertical Feed)
 
-A personal TikTok-style vertical video and media reel player for Reddit, powered by an unpacked Chrome Extension bridge that proxies requests using your logged-in Reddit session cookies and automatically resolves Redgifs videos.
+A personal TikTok/Instagram Reels style vertical video player for Reddit, powered by a lightweight Chromium extension bridge that securely proxies requests using your logged-in Reddit session cookies and automatically resolves high-definition Reddit & Redgifs videos.
 
----
-
-## Architecture
-
-```
-[Website / PWA] (localhost:5173)
-        │
-        │  window.postMessage (request ID + type + payload)
-        ▼
-[Content Script] (content.js - injected into localhost origins)
-        │
-        │  chrome.runtime.sendMessage
-        ▼
-[Background Service Worker] (background.js)
-        │
-        │  fetch with credentials: 'include' (session cookies)
-        ▼
-Reddit .json / Redgifs API & Watch page
-```
-
-All Reddit and Redgifs network calls occur exclusively inside the extension background script to bypass CORS and leverage existing browser login cookies.
+Hosted on GitHub Pages: **[https://yaser-rh.github.io/reelit/](https://yaser-rh.github.io/reelit/)**
 
 ---
 
-## Project Structure
+## 📱 Mobile Setup Guide (Titanium Browser / Android)
+
+### English Guide
+
+#### Step 1: Install Titanium & Add Extension
+1. Download and install **Titanium Browser** on your Android phone.
+2. Download the extension package:  
+   👉 **[reelit-extension.zip](https://github.com/Yaser-rh/reelit/raw/main/reelit-extension.zip)**
+3. **Extract / Unpack** the `.zip` file using your phone's file manager into a regular folder *(important: the folder must be unpacked)*.
+4. Open Titanium Browser, tap the menu **(⋮)** ➔ **Extensions** (or navigate to `chrome://extensions`).
+5. Toggle ON **Developer mode** (top-right corner).
+6. Tap **Load unpacked** (or `+ (from .zip/.crx/.user.js)`) and select the unpacked folder.
+7. Verify that **Reddit Reels Bridge** is loaded and enabled.
+
+#### Step 2: Log In & Install App to Home Screen (PWA)
+1. In Titanium Browser, open [reddit.com](https://www.reddit.com) (or `old.reddit.com`) and **log into your Reddit account**.
+2. Open a new tab and navigate to:  
+   👉 **`https://yaser-rh.github.io/reelit/`**
+3. Tap the menu **(⋮)** ➔ **Share and save** ➔ **Install and create shortcut** ➔ **Install**.
+4. Launch **Reelit** directly from your phone's home screen as a full-screen standalone app!
+
+---
+
+### دليل التشغيل والتثبيت بالعربية (متصفح Titanium للأندرويد)
+
+#### الخطوة 1: تثبيت المتصفح وتفعيل الإضافة (Extension)
+1. قم بتحميل وتثبيت متصفح **Titanium Browser** على هاتفك الأندرويد.
+2. حمّل ملف الإضافة:  
+   👉 **[reelit-extension.zip](https://github.com/Yaser-rh/reelit/raw/main/reelit-extension.zip)**
+3. قم بـ **فك الضغط (Extract / Unpack)** عن ملف الـ `.zip` باستخدام مدير الملفات بهاتفك إلى مجلد عادي *(ملاحظة مهمة: يجب فك الضغط عن الملف)*.
+4. افتح متصفح Titanium، واضغط على زر القائمة **(⋮)** ➔ ثم **الإضافات (Extensions)** (أو اذهب إلى `chrome://extensions`).
+5. فعّل خيار **وضع المطور (Developer mode)** في الزاوية العلوية.
+6. اضغط على **Load unpacked** (أو زر إضافة الامتدادات) واختر مجلد الإضافة بعد فك الضغط.
+7. تأكد من ظهور إضافة **Reddit Reels Bridge** في القائمة وأنها مفعلة.
+
+#### الخطوة 2: تسجيل الدخول وتثبيت التطبيق على الشاشة الرئيسية (PWA)
+1. داخل متصفح Titanium، افتح [reddit.com](https://www.reddit.com) (أو `old.reddit.com`) و**سجّل الدخول إلى حسابك في ريديت**.
+2. افتح تبويباً جديداً (New Tab) وادخل إلى رابط الموقع:  
+   👉 **`https://yaser-rh.github.io/reelit/`**
+3. اضغط على قائمة المتصفح **(⋮)** ➔ **مشاركة وحفظ (Share and save)** ➔ **تثبيت وإنشاء اختصار (Install and create shortcut)** ➔ ثم **تثبيت (Install)**.
+4. افتح تطبيق **Reelit** الآن من شاشتك الرئيسية كتطبيق مستقل كامل الشاشة!
+
+---
+
+## ⚙️ How It Works (Brief Overview)
 
 ```
-reelit3/
-├── extension/                 # Chrome Extension (Manifest V3)
-│   ├── manifest.json          # Permissions (cookies, host permissions)
+[ Reelit PWA Frontend ] (GitHub Pages / Android App)
+        │
+        │  window.postMessage
+        ▼
+[ Companion Extension ] (Reddit Reels Bridge)
+        │
+        │  fetch with credentials: 'include'
+        ▼
+[ Reddit & Redgifs APIs ] (Logged-in cookies + HD Resolvers)
+```
+
+1. **Cookie-Powered Session**: The companion extension proxies API requests using your existing browser session cookies. This means Reelit displays your actual subscribed Home feed, upvotes, and saved preferences without asking for your username or password.
+2. **Universal Video & Audio Playback**: Plays high-definition Reddit videos (`v.redd.it`) with synced audio streams, and resolves Redgifs streams directly in the background.
+3. **Optimized for Mobile**: Built with vertical full-screen swipe snapping, double-tap to like, touch gesture navigation, and offline app-shell caching.
+
+---
+
+## 💻 Desktop Quick Start (Development & PC)
+
+1. Open Chrome, Brave, or Edge and go to `chrome://extensions`.
+2. Enable **Developer mode** and click **Load unpacked**.
+3. Select the `extension` folder in this repo.
+4. Log into Reddit in the same browser profile.
+5. Visit [https://yaser-rh.github.io/reelit/](https://yaser-rh.github.io/reelit/) (or run `npm run dev` in `site/`).
+
+---
+
+## 📁 Project Structure
+
+```
+reelit/
+├── extension/                 # Companion Chrome Extension (Manifest V3)
+│   ├── manifest.json          # Permissions & GitHub Pages content script matches
 │   ├── background.js          # Service worker (Reddit fetch & Redgifs resolver)
 │   └── content.js             # Window postMessage bridge
-├── site/                      # Vite Frontend Web App
+├── site/                      # Vite Frontend Web App (PWA)
 │   ├── index.html             # Shell with header, feed, and status modals
 │   ├── main.js                # App entrypoint and UI event binding
 │   ├── bridge.js              # Promise-based extension communication bridge
 │   ├── reddit.js              # Reddit JSON client and media classifier
 │   ├── feed.js                # Scroll-snap controller & video/audio player
 │   ├── styles.css             # Full-screen dark mode TikTok UI styling
-│   └── vite.config.js         # Vite configuration (port 5173, host enabled)
-├── reelit-plan.txt            # Implementation plan specification
+│   └── vite.config.js         # Vite configuration & vite-plugin-pwa setup
+├── reelit-extension.zip       # Ready-to-install extension package for mobile
+├── .github/workflows/         # Automated GitHub Actions deployment to Pages
 └── README.md
 ```
-
----
-
-## Quick Start (Windows Testing)
-
-### 1. Load the Chrome Extension
-
-1. Open Google Chrome (or any Chromium browser like Brave, Edge, Titanium).
-2. Navigate to `chrome://extensions`.
-3. Enable **Developer mode** (toggle switch in the top-right corner).
-4. Click **Load unpacked** (top-left button).
-5. Select the `extension` folder inside this project directory:
-   `C:\Users\rh22\Desktop\pls\reelit3\extension`
-6. Verify that **Reddit Reels Bridge** appears in your extension list and is enabled.
-
-> **Important**: Ensure you are logged into Reddit (`reddit.com` or `old.reddit.com`) in the same Chrome profile so your personal feed and upvotes can be retrieved.
-
-### 2. Start the Local Website
-
-Open a terminal in the `site` directory and start the Vite development server:
-
-```powershell
-cd C:\Users\rh22\Desktop\pls\reelit3\site
-npm run dev
-```
-
-The app will be available at:
-`http://localhost:5173/`
-
-### 3. Open and Enjoy
-
-1. Open `http://localhost:5173/` in the Chrome window where the extension is installed.
-2. The top bar status indicator should turn **Green** (`v1.2.0 • Logged In`), confirming that the bridge handshake succeeded.
-3. Your reels will load immediately!
-
----
-
-## Features
-
-- **TikTok / Reels Interface**: Full-screen vertical scroll snapping (`100dvh`), blurred ambient backdrop, and clean overlays.
-- **On-Demand HLS Engine**: Initializes HLS streams on demand only for the active visible reel, preventing Chromium hardware decoder quota exhaustion.
-- **Reddit Video Synchronized Audio**: High-definition HLS audio tracks with native fallback DASH track synchronization.
-- **Redgifs Multi-Strategy Resolver & ISP Fallback**:
-  - Automatically unblocks Redgifs videos using Reddit's CDN cache fallback (`v.redd.it`) when an ISP blocks `redgifs.com`.
-  - Non-blocking background resolver upgrades streams to native Redgifs HD without freezing the feed.
-- **Diagnostic Badge Overlay**: Live indicators displaying exact media source and audio state (`[ 🔴 Reddit Video ]`, `[ 🎬 Redgifs HD ]`, `[ 🛡️ Reddit Cache ]`, `[ 🔊 Audio ON ]`, `[ 🔇 Muted ]`).
-- **Media Support**:
-  - Reddit Hosted Videos (`v.redd.it`)
-  - Redgifs
-  - Reddit Galleries (horizontal swipe with indicator dots and arrow navigation)
-  - Direct Images & Imgur GIFs
-- **Feed & Subreddit Switcher**:
-  - Home feed (your personal Reddit subscriptions)
-  - `r/popular`, `r/all`, `r/TikTokCringe`, `r/funny`, `r/Damnthatsinteresting`
-  - Custom Subreddit input prompt
-  - Sorting: *Hot*, *Top* (day, week, month, year, all), *New*, *Rising*
-- **Interactive Controls**:
-  - **Single click / tap**: Play / Pause video with icon flash
-  - **Double click / tap**: Like heart animation burst
-  - **Mute / Unmute button**: Global sound toggle
-  - **Reddit button**: Open original thread in a new tab
-  - **Share button**: Copy Reddit permalink to clipboard
-  - **Keyboard Shortcuts**:
-    - `↓` or `J`: Next reel
-    - `↑` or `K`: Previous reel
-    - `←` / `→` or `H` / `L`: Gallery slide navigation
-    - `Space`: Play / Pause
-    - `M`: Mute / Unmute
-    - `O`: Open thread on Reddit
-- **Built-in Debug Console**: Click the status indicator badge in the top bar to inspect real-time bridge handshakes, fetch logs, and resolution statuses.
-
----
-
-## Full Implementation Log
-
-For in-depth architectural details, problem root causes, and developer handoff documentation, see:  
-👉 [IMPLEMENTATION_LOG.md](./IMPLEMENTATION_LOG.md)
-
----
-
-## Next Step: Android PWA Deployment
-
-When you're ready to test on Android:
-1. In Kiwi, Titanium, or Quetta Browser on Android, enable Developer Mode and load the `extension` folder unpacked.
-2. Serve the `site` over your local Wi-Fi network (Vite's `--host` option displays your LAN IP, e.g., `http://192.168.1.x:5173`).
-3. Add the page to your Home Screen to run it in full-screen standalone mode.
