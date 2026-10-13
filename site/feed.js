@@ -1,6 +1,18 @@
 import bridge from './bridge.js';
 import { fetchFeed, isTargetJoined } from './reddit.js';
-import Hls from 'hls.js';
+
+let HlsModule = null;
+async function getHls() {
+  if (!HlsModule) {
+    try {
+      const mod = await import('hls.js');
+      HlsModule = mod.default || mod;
+    } catch (err) {
+      console.warn("Failed to dynamically load hls.js:", err);
+    }
+  }
+  return HlsModule;
+}
 
 const SEEN_STORAGE_KEY = "reelit_seen_posts_v1";
 
@@ -36,7 +48,9 @@ export class FeedController {
     this.items = [];
     this.renderedElements = new Map(); // index -> DOM element
     this.currentIndex = -1;
+    this.previousIndex = -1;
     this.isMuted = true; // start muted to comply with browser autoplay policies
+    this.container.classList.toggle("is-muted", this.isMuted);
     this.isLoading = false;
     this.hasMore = true;
     this.after = null;
@@ -137,6 +151,8 @@ export class FeedController {
 
   handleItemVisible(index, element) {
     if (this.currentIndex === index) return;
+    const prevIndex = this.currentIndex;
+    this.previousIndex = prevIndex;
     this.currentIndex = index;
 
     const isHomeFeed = !this.subreddit && !this.user;
@@ -147,29 +163,104 @@ export class FeedController {
 
     this.onDebugLog(`Active Reel: #${index} - ${currentItem?.title?.substring(0, 30)}...`);
 
-    // Pause all other media & clean up distant HLS instances to prevent MediaSource decoder limits
+    // O(1) pause previous reel
+    if (prevIndex >= 0 && prevIndex !== index) {
+      const prevEl = this.renderedElements.get(prevIndex);
+      if (prevEl) {
+        this.pauseMedia(prevEl);
+      }
+    }
+
+    // Mount and play active reel
+    this.mountVideo(index, true);
+
+    // Warm up next reel (1 ahead) with metadata only
+    if (index + 1 < this.items.length) {
+      this.mountVideo(index + 1, false);
+    }
+
+    // Unmount distant reels (> 1 away) to cancel background downloads & free hardware decoders
     this.renderedElements.forEach((el, idx) => {
-      if (idx !== index) {
-        this.pauseMedia(el);
-        if (Math.abs(idx - index) > 2) {
-          const video = el.querySelector("video");
-          if (video?._hls) {
-            video._hls.destroy();
-            video._hls = null;
-          }
-        }
+      if (Math.abs(idx - index) > 1) {
+        this.unmountVideo(idx);
       }
     });
 
-    // Play active item
-    this.playMedia(element);
+    // Priority resolve Redgifs for active and next reel
+    this.resolvePriorityRedgifs(index);
 
-    // Preload next 2 items
+    // Preload next 2 image thumbnails
     this.preloadAhead(index, 2);
 
     // Infinite scroll check: near end
     if (index >= this.items.length - 4 && !this.isLoading && this.hasMore) {
       this.loadMore();
+    }
+  }
+
+  mountVideo(index, autoPlay = false) {
+    const el = this.renderedElements.get(index);
+    const item = this.items[index];
+    if (!el || !item) return;
+
+    const wrapper = el.querySelector(".media-wrapper");
+    if (!wrapper) return;
+
+    const hasVideo = Boolean(item.videoUrl || item.hlsUrl || item.cachedVideoUrl);
+    if (!hasVideo && !item.redgifsId) return;
+
+    let video = wrapper.querySelector("video");
+    if (!video && (item.videoUrl || item.hlsUrl || item.cachedVideoUrl)) {
+      const posterAttr = item.thumbnailUrl ? `poster="${item.thumbnailUrl}"` : "";
+      const audioSources = (item.audioCandidates || [])
+        .map((src) => `<source src="${src}" type="audio/mp4" />`)
+        .join("");
+
+      wrapper.innerHTML = `
+        <video class="media-element" playsinline loop preload="metadata" ${posterAttr} ${this.isMuted ? "muted" : ""}></video>
+        ${audioSources ? `<audio preload="none">${audioSources}</audio>` : (item.audioUrl ? `<audio src="${item.audioUrl}" preload="none"></audio>` : "")}
+        <div class="play-indicator-flash"></div>
+      `;
+      video = wrapper.querySelector("video");
+      this.wireScrubber(el, video);
+    }
+
+    if (video) {
+      if (autoPlay) {
+        this.playMedia(el);
+      } else {
+        // Preload next reel with metadata only (skip for HLS reels so we don't start downloading raw fallback DASH_1080)
+        if (!item.hlsUrl && item.videoUrl && (!video.src || video.src !== item.videoUrl)) {
+          video.src = item.videoUrl;
+          video.preload = "metadata";
+        }
+      }
+    }
+  }
+
+  unmountVideo(index) {
+    const el = this.renderedElements.get(index);
+    if (!el) return;
+
+    this.pauseMedia(el);
+
+    const video = el.querySelector("video");
+    if (video) {
+      video._hlsLoading = false;
+      video._hlsCanceled = true;
+      if (video._hls) {
+        video._hls.destroy();
+        video._hls = null;
+      }
+      if (video.src) {
+        video.removeAttribute("src");
+        video.load();
+      }
+    }
+
+    const audio = el.querySelector("audio");
+    if (audio) {
+      audio.pause();
     }
   }
 
@@ -189,84 +280,121 @@ export class FeedController {
     this.pauseMedia(element);
   }
 
-  playMedia(element) {
+  async playMedia(element) {
     const video = element.querySelector("video");
     const audio = element.querySelector("audio");
     const index = parseInt(element.dataset.index, 10);
     const item = this.items[index];
+    if (!item || !video) return;
 
-    if (video) {
-      video.volume = 1.0;
-      video.muted = this.isMuted;
+    video.volume = 1.0;
+    video.muted = this.isMuted;
 
-      // On-demand HLS initialization for Reddit videos
-      if (item?.hlsUrl && Hls.isSupported()) {
-        if (!video._hls) {
-          const hls = new Hls({
-            capLevelToPlayerSize: true,
-            maxBufferLength: 15,
-            maxMaxBufferLength: 30,
-            enableWorker: true
-          });
-          hls.loadSource(item.hlsUrl);
-          hls.attachMedia(video);
-          video._hls = hls;
+    // On-demand dynamic HLS initialization for Reddit videos
+    if (item.hlsUrl) {
+      if (video._hlsLoading || video._hls) {
+        if (video._hls && video.paused && index === this.currentIndex) {
+          video._hls.startLoad();
+          video.play().catch(() => {});
+        }
+        return;
+      }
 
-          hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            if (element.dataset.index == this.currentIndex) {
-              const playPromise = video.play();
-              if (playPromise !== undefined) {
-                playPromise.catch((err) => {
-                  if (!this.isMuted) {
-                    video.muted = true;
-                    video.play().catch(() => {});
-                  }
-                });
-              }
-            }
-          });
+      video._hlsLoading = true;
+      video._hlsCanceled = false;
 
-          hls.on(Hls.Events.ERROR, (event, data) => {
-            if (data.fatal) {
-              console.warn("HLS fatal error, falling back to direct MP4 videoUrl", data);
-              hls.destroy();
-              video._hls = null;
-              if (item.videoUrl) {
-                video.src = item.videoUrl;
-                video.load();
-                if (element.dataset.index == this.currentIndex) {
+      const Hls = await getHls();
+
+      // Guard: Swiped away, unmounted, or canceled while awaiting HLS module
+      if (video._hlsCanceled || index !== this.currentIndex || !video.isConnected) {
+        video._hlsLoading = false;
+        return;
+      }
+
+      if (Hls && Hls.isSupported()) {
+        const isSaveData = Boolean(
+          navigator.connection?.saveData ||
+          navigator.connection?.effectiveType === '2g' ||
+          navigator.connection?.effectiveType === '3g'
+        );
+        const hls = new Hls({
+          capLevelToPlayerSize: true,
+          maxBufferLength: isSaveData ? 4 : 6,
+          maxMaxBufferLength: isSaveData ? 8 : 10,
+          enableWorker: true
+        });
+
+        // Detach any previous src before attaching HLS
+        if (video.src) {
+          video.removeAttribute("src");
+          video.load();
+        }
+
+        hls.loadSource(item.hlsUrl);
+        hls.attachMedia(video);
+        video._hls = hls;
+        video._hlsLoading = false;
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (parseInt(element.dataset.index, 10) === this.currentIndex) {
+            const playPromise = video.play();
+            if (playPromise !== undefined) {
+              playPromise.catch(() => {
+                if (!this.isMuted) {
+                  video.muted = true;
                   video.play().catch(() => {});
                 }
-              }
+              });
             }
-          });
-          return;
-        } else {
-          video._hls.startLoad();
-        }
-      } else if (item?.videoUrl && (!video.src || video.src !== item.videoUrl)) {
-        video.src = item.videoUrl;
-        video.load();
-      }
-
-      const playPromise = video.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          if (!this.isMuted) {
-            console.warn("Unmuted autoplay restricted by browser policy, falling back to muted:", err);
-            video.muted = true;
-            video.play().catch(() => {});
           }
         });
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          if (data.fatal) {
+            console.warn("HLS fatal error, falling back to direct MP4 videoUrl", data);
+            hls.destroy();
+            video._hls = null;
+            video._hlsLoading = false;
+            if (item.videoUrl) {
+              video.src = item.videoUrl;
+              video.load();
+              if (parseInt(element.dataset.index, 10) === this.currentIndex) {
+                video.play().catch(() => {});
+              }
+            }
+          }
+        });
+        return;
+      } else {
+        video._hlsLoading = false;
       }
+    } else if (item.videoUrl && (!video.src || video.src !== item.videoUrl)) {
+      video.src = item.videoUrl;
+      video.load();
     }
 
+    const playPromise = video.play();
+    if (playPromise !== undefined) {
+      playPromise.catch((err) => {
+        if (!this.isMuted) {
+          console.warn("Unmuted autoplay restricted by browser policy, falling back to muted:", err);
+          video.muted = true;
+          video.play().catch(() => {});
+        }
+      });
+    }
+
+    // Sidecar audio: ONLY play if NOT playing via HLS (HLS already has synced audio muxed)
     if (audio) {
-      audio.volume = 1.0;
-      audio.muted = this.isMuted;
-      if (!this.isMuted && video && !video.paused) {
-        audio.currentTime = video.currentTime;
-        audio.play().catch(() => {});
+      if (video?._hls || item.hlsUrl) {
+        audio.pause();
+      } else {
+        audio.volume = 1.0;
+        audio.muted = this.isMuted;
+        if (!this.isMuted && !video.paused) {
+          audio.currentTime = video.currentTime;
+          audio.play().catch(() => {});
+        }
       }
     }
   }
@@ -276,6 +404,8 @@ export class FeedController {
     const audio = element.querySelector("audio");
 
     if (video) {
+      video._hlsCanceled = true;
+      video._hlsLoading = false;
       if (!video.paused) {
         video.pause();
       }
@@ -322,6 +452,7 @@ export class FeedController {
 
   toggleMute(targetElement = null) {
     this.isMuted = !this.isMuted;
+    this.container.classList.toggle("is-muted", this.isMuted);
 
     const currentEl = targetElement || this.renderedElements.get(this.currentIndex);
     const item = this.items[this.currentIndex];
@@ -344,29 +475,16 @@ export class FeedController {
         audio.volume = 1.0;
         if (this.isMuted) {
           audio.pause();
-        } else if (video && !video.paused) {
+        } else if (video && !video.paused && !video._hls) {
           audio.currentTime = video.currentTime;
           audio.play().catch(() => {});
         }
       }
 
-      const soundBtn = currentEl.querySelector(".sound-btn .action-icon-circle");
-      if (soundBtn) {
-        soundBtn.innerHTML = this.getSoundIconSvg(this.isMuted);
+      if (item) {
+        this.updateItemBadge(currentEl, item);
       }
     }
-
-    // Keep all sound buttons & diagnostic badges in sync across reels
-    this.renderedElements.forEach((el, idx) => {
-      const btn = el.querySelector(".sound-btn .action-icon-circle");
-      if (btn) {
-        btn.innerHTML = this.getSoundIconSvg(this.isMuted);
-      }
-      const it = this.items[idx];
-      if (it) {
-        this.updateItemBadge(el, it);
-      }
-    });
 
     if (item && item.isIspFallback) {
       this.onStatusUpdate({ toast: "Redgifs blocked by ISP: playing Reddit preview (desktop VPN required for audio)" });
@@ -434,14 +552,14 @@ export class FeedController {
     // Ensure sound button is present and updated
     const actionColumn = element.querySelector(".action-column");
     let soundBtn = element.querySelector(".sound-btn");
-    if (!soundBtn && actionColumn && item.videoUrl) {
+    if (!soundBtn && actionColumn && (item.videoUrl || item.cachedVideoUrl)) {
       const statusBtn = element.querySelector(".bridge-status-btn");
       soundBtn = document.createElement("button");
       soundBtn.className = "action-btn sound-btn";
       soundBtn.title = "Toggle Sound";
       soundBtn.innerHTML = `
         <div class="action-icon-circle">
-          ${this.getSoundIconSvg(this.isMuted)}
+          ${this.getSoundIconSvg()}
         </div>
         <span class="action-label">${item.isGif || item.hasAudio === false ? "No Sound" : "Sound"}</span>
       `;
@@ -465,43 +583,9 @@ export class FeedController {
     if (!wrapper) return;
 
     if (item.videoUrl) {
-      let video = wrapper.querySelector("video");
-      if (!video) {
-        wrapper.innerHTML = `
-          <video class="media-element" playsinline loop preload="metadata" ${item.thumbnailUrl ? `poster="${item.thumbnailUrl}"` : ""} ${this.isMuted ? "muted" : ""}></video>
-          <div class="play-indicator-flash"></div>
-        `;
-        video = wrapper.querySelector("video");
-        video.addEventListener("error", () => {
-          if (item.cachedVideoUrl && video.src !== item.cachedVideoUrl) {
-            item.sourceType = "reddit_cache";
-            item.isIspFallback = true;
-            item.hasAudio = false;
-            this.updateItemBadge(element, item);
-            video.src = item.cachedVideoUrl;
-            video.load();
-            if (element.dataset.index == this.currentIndex) {
-              video.play().catch(() => {});
-            }
-          }
-        });
-      }
-
-      if (video && video.src !== item.videoUrl) {
-        const wasPlaying = !video.paused;
-        const prevTime = video.currentTime;
-        video.src = item.videoUrl;
-        video.load();
-        if (prevTime > 0) {
-          try { video.currentTime = prevTime; } catch (_) {}
-        }
-        if (wasPlaying && element.dataset.index == this.currentIndex) {
-          video.play().catch(() => {});
-        }
-      }
-
-      if (video) {
-        this.wireScrubber(element, video);
+      const idx = parseInt(element.dataset.index, 10);
+      if (idx === this.currentIndex || idx === this.currentIndex + 1) {
+        this.mountVideo(idx, idx === this.currentIndex);
       }
     } else if (item.embedUrl) {
       wrapper.innerHTML = `
@@ -510,11 +594,11 @@ export class FeedController {
     }
   }
 
-  getSoundIconSvg(muted) {
-    if (muted) {
-      return `<svg viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27l4.73 4.73H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`;
-    }
-    return `<svg viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`;
+  getSoundIconSvg() {
+    return `
+      <svg class="sound-icon-muted" viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27l4.73 4.73H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
+      <svg class="sound-icon-unmuted" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+    `;
   }
 
   preloadAhead(currentIndex, count = 2) {
@@ -536,8 +620,13 @@ export class FeedController {
     this.sort = filter.sort || (this.user ? "new" : (this.subreddit ? "hot" : "best"));
     this.timeFilter = filter.timeFilter || "day";
     this.after = null;
-    this.items = [];
+
+    // Properly tear down all active video and HLS instances before clearing DOM
+    this.renderedElements.forEach((el, idx) => {
+      this.unmountVideo(idx);
+    });
     this.renderedElements.clear();
+    this.items = [];
     this.container.innerHTML = "";
     this.currentIndex = -1;
     this.hasMore = true;
@@ -551,15 +640,18 @@ export class FeedController {
     this.onStatusUpdate({ isLoading: true });
 
     try {
+      const isInitial = this.items.length === 0;
+      const batchLimit = isInitial ? 15 : 25;
       const targetLabel = this.user ? `u/${this.user}` : (this.subreddit ? `r/${this.subreddit}` : "home");
-      this.onDebugLog(`Fetching Reddit feed (${targetLabel}/${this.sort})...`);
+      this.onDebugLog(`Fetching Reddit feed (${targetLabel}/${this.sort}, limit=${batchLimit})...`);
 
       const res = await fetchFeed({
         subreddit: this.subreddit,
         user: this.user,
         sort: this.sort,
         t: this.timeFilter,
-        after: this.after
+        after: this.after,
+        limit: batchLimit
       });
 
       let currentAfter = res.after;
@@ -586,48 +678,28 @@ export class FeedController {
       let itemsToRender = [];
 
       if (isHomeFeed) {
-        // Home Feed Freshness: Filter out seen posts and auto-paginate if needed
-        let freshCandidates = allCandidates.filter((item) => !this.seenPostIds.has(item.id));
+        // Home Feed Freshness: Filter out seen posts
+        const freshCandidates = allCandidates.filter((item) => !this.seenPostIds.has(item.id));
 
-        let pagePulls = 0;
-        while (freshCandidates.length < 15 && currentAfter && pagePulls < 3) {
-          pagePulls++;
-          this.onDebugLog(`Filtered ${allCandidates.length - freshCandidates.length} seen posts. Auto-fetching page ${pagePulls + 1}...`);
-          const nextRes = await fetchFeed({
-            subreddit: this.subreddit,
-            user: this.user,
-            sort: this.sort,
-            t: this.timeFilter,
-            after: currentAfter
-          });
-          currentAfter = nextRes.after;
-          this.after = currentAfter;
-          if (!currentAfter) {
-            this.hasMore = false;
+        // Render fresh candidates immediately to achieve instantaneous First Paint!
+        if (freshCandidates.length > 0) {
+          itemsToRender = freshCandidates;
+        } else {
+          // If all candidates in this batch were already seen, fallback to allCandidates so feed is never blank
+          itemsToRender = allCandidates;
+          if (allCandidates.length > 0) {
+            this.onStatusUpdate({ toast: "Caught up on recent reels! Showing latest." });
           }
-          const nextMedia = nextRes.items.filter(isMediaItem);
-          allCandidates.push(...nextMedia);
-          const nextFresh = nextMedia.filter((item) => !this.seenPostIds.has(item.id));
-          freshCandidates.push(...nextFresh);
         }
-
-        // If user has viewed all available posts, fallback to allCandidates so feed is never blank
-        itemsToRender = freshCandidates.length > 0 ? freshCandidates : allCandidates;
-        if (freshCandidates.length === 0 && allCandidates.length > 0) {
-          this.onStatusUpdate({ toast: "Caught up on all new reels! Showing latest." });
-        }
-        this.onDebugLog(`Total loaded reels: ${itemsToRender.length} (${freshCandidates.length} fresh unseen)`);
+        this.onDebugLog(`Loaded reels: ${itemsToRender.length} (${freshCandidates.length} fresh unseen)`);
       } else {
-        // Subreddit feed or Creator Profile:
-        // Do NOT remove seen posts! Feed remains identical to Reddit (Top, Hot, New, Rising)
+        // Subreddit feed or Creator Profile: keep all candidates
         itemsToRender = allCandidates;
-        this.onDebugLog(`Total loaded subreddit/creator reels: ${itemsToRender.length}`);
+        this.onDebugLog(`Loaded subreddit/creator reels: ${itemsToRender.length}`);
       }
 
-      const newEntries = [];
       for (const item of itemsToRender) {
-        const el = this.appendItem(item);
-        newEntries.push({ item, el });
+        this.appendItem(item);
       }
 
       if (this.items.length > 0) {
@@ -638,8 +710,17 @@ export class FeedController {
         });
       }
 
-      // Non-blocking background resolution for Redgifs
-      this.resolveRedgifsInBackground(newEntries);
+      // Priority resolution: only resolve active and next reel instead of walking the whole page
+      this.resolvePriorityRedgifs(this.currentIndex >= 0 ? this.currentIndex : 0);
+
+      // If feed has very few items (e.g. fewer than 5) and more are available, top up seamlessly in the background
+      if (this.items.length < 5 && this.hasMore) {
+        setTimeout(() => {
+          if (!this.isLoading && this.hasMore) {
+            this.loadMore();
+          }
+        }, 200);
+      }
 
     } catch (err) {
       console.error("Failed to load feed:", err);
@@ -651,56 +732,94 @@ export class FeedController {
     }
   }
 
-  async resolveRedgifsInBackground(entries) {
-    for (const { item, el } of entries) {
-      if (!item.needsResolution) continue;
+  async resolvePriorityRedgifs(activeIdx) {
+    const queue = [activeIdx, activeIdx + 1].filter(
+      (idx) => idx >= 0 && idx < this.items.length && this.items[idx]?.needsResolution
+    );
 
+    for (const idx of queue) {
+      const item = this.items[idx];
+      const el = this.renderedElements.get(idx);
+      if (!item || !item.needsResolution || item._isResolving) continue;
+
+      item._isResolving = true;
       try {
-        this.onDebugLog(`[Background] Resolving Redgifs: ${item.originalUrl}`);
-        const resolvePromise = bridge.resolveRedgifs(item.originalUrl);
+        this.onDebugLog(`[Priority] Resolving Redgifs: ${item.originalUrl}`);
+        const resolvePromise = bridge.resolveRedgifs({
+          url: item.originalUrl,
+          hasCachedVideo: Boolean(item.cachedVideoUrl)
+        });
+
+        // Background handler for late resolution if the 6.5s timeout fired
+        resolvePromise.then((lateResult) => {
+          if (lateResult?.videoUrl && item.sourceType !== "redgifs_direct") {
+            this.onDebugLog(`[Priority] Late Redgifs resolved: upgrading #${idx}`);
+            item.videoUrl = lateResult.videoUrl;
+            item.hdUrl = lateResult.hdUrl || lateResult.videoUrl;
+            item.sdUrl = lateResult.sdUrl || lateResult.videoUrl;
+            item.thumbnailUrl = lateResult.thumbnailUrl || item.thumbnailUrl;
+            item.sourceType = "redgifs_direct";
+            item.hasAudio = lateResult.hasAudio !== false;
+            item.isIspFallback = false;
+            item.needsResolution = false;
+            if (el) {
+              this.updateReelMedia(el, item);
+              if (idx === this.currentIndex) {
+                this.mountVideo(idx, true);
+              }
+            }
+          }
+        }).catch(() => {});
+
         const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Redgifs bridge timeout")), 3500)
+          setTimeout(() => reject(new Error("Redgifs bridge timeout")), 6500)
         );
         const resolved = await Promise.race([resolvePromise, timeoutPromise]);
 
         if (resolved?.videoUrl) {
-          this.onDebugLog(`[Background] Redgifs resolved: HD video ready`);
+          this.onDebugLog(`[Priority] Redgifs resolved: ready`);
           item.videoUrl = resolved.videoUrl;
+          item.hdUrl = resolved.hdUrl || resolved.videoUrl;
+          item.sdUrl = resolved.sdUrl || resolved.videoUrl;
           item.thumbnailUrl = resolved.thumbnailUrl || item.thumbnailUrl;
           item.sourceType = "redgifs_direct";
           item.hasAudio = resolved.hasAudio !== false;
           item.isIspFallback = false;
           item.needsResolution = false;
-          this.updateReelMedia(el, item);
         } else if (item.cachedVideoUrl) {
           item.videoUrl = item.cachedVideoUrl;
-          item.hlsUrl = null;
           item.sourceType = "reddit_cache";
           item.isIspFallback = true;
           item.hasAudio = false;
           item.needsResolution = false;
-          this.updateReelMedia(el, item);
         } else if (resolved?.embedUrl) {
           item.embedUrl = resolved.embedUrl;
           item.sourceType = "redgifs_iframe";
           item.needsResolution = false;
-          this.updateReelMedia(el, item);
         }
       } catch (err) {
-        this.onDebugLog(`[Background] Redgifs failed (${err.message}). Using fallback.`);
+        this.onDebugLog(`[Priority] Redgifs fallback used: ${err.message}`);
         if (item.cachedVideoUrl) {
+          // Play silent Reddit preview for immediate response without waiting indefinitely
           item.videoUrl = item.cachedVideoUrl;
           item.hlsUrl = null;
           item.sourceType = "reddit_cache";
           item.isIspFallback = true;
           item.hasAudio = false;
-          item.needsResolution = false;
-          this.updateReelMedia(el, item);
+          // Keep needsResolution true if it was merely a bridge timeout so background resolution can still upgrade it!
+          item.needsResolution = !err.message.includes("timeout");
         } else if (item.redgifsId) {
           item.embedUrl = `https://www.redgifs.com/ifr/${item.redgifsId}?autoplay=0`;
           item.sourceType = "redgifs_iframe";
           item.needsResolution = false;
+        }
+      } finally {
+        item._isResolving = false;
+        if (el) {
           this.updateReelMedia(el, item);
+          if (idx === this.currentIndex) {
+            this.mountVideo(idx, true);
+          }
         }
       }
     }
@@ -727,13 +846,13 @@ export class FeedController {
       mediaHtml = `
         <iframe class="media-element redgifs-iframe" src="${item.embedUrl}" allow="autoplay; fullscreen" loading="lazy"></iframe>
       `;
-    } else if (item.videoUrl) {
+    } else if (item.videoUrl || item.hlsUrl || item.cachedVideoUrl || item.needsResolution) {
       const audioSources = (item.audioCandidates || [])
         .map((src) => `<source src="${src}" type="audio/mp4" />`)
         .join("");
 
       mediaHtml = `
-        <video class="media-element" playsinline loop preload="metadata" ${item.thumbnailUrl ? `poster="${item.thumbnailUrl}"` : ""} ${this.isMuted ? "muted" : ""}></video>
+        <video class="media-element" playsinline loop preload="none" ${item.thumbnailUrl ? `poster="${item.thumbnailUrl}"` : ""} ${this.isMuted ? "muted" : ""}></video>
         ${audioSources ? `<audio preload="none">${audioSources}</audio>` : (item.audioUrl ? `<audio src="${item.audioUrl}" preload="none"></audio>` : "")}
         <div class="play-indicator-flash"></div>
       `;
@@ -741,7 +860,17 @@ export class FeedController {
       mediaHtml = `
         <div class="gallery-wrapper">
           <div class="gallery-container">
-            ${item.images.map((img) => `<div class="gallery-slide"><img class="media-element" src="${img.url}" loading="lazy" /></div>`).join("")}
+            ${item.images.map((img, i) => {
+              if (img.mp4Url) {
+                return `<div class="gallery-slide" data-slide="${i}">
+                  <video class="media-element" playsinline loop muted preload="${i === 0 ? "metadata" : "none"}" poster="${img.posterUrl || img.url || ""}" ${i <= 1 ? `src="${img.mp4Url}"` : `data-src="${img.mp4Url}"`}></video>
+                </div>`;
+              } else {
+                return `<div class="gallery-slide" data-slide="${i}">
+                  <img class="media-element" ${i <= 1 ? `src="${img.url}"` : `data-src="${img.url}"`} loading="lazy" />
+                </div>`;
+              }
+            }).join("")}
           </div>
           ${item.images.length > 1 ? `
             <div class="gallery-counter">1 / ${item.images.length}</div>
@@ -815,10 +944,10 @@ export class FeedController {
           <span class="action-label">${item.commentsFormatted}</span>
         </a>
 
-        ${item.videoUrl ? `
+        ${item.videoUrl || item.hlsUrl || item.cachedVideoUrl || item.needsResolution ? `
           <button class="action-btn sound-btn" title="Toggle Sound">
             <div class="action-icon-circle">
-              ${this.getSoundIconSvg(this.isMuted)}
+              ${this.getSoundIconSvg()}
             </div>
             <span class="action-label">${item.isGif || item.hasAudio === false ? "No Sound" : "Sound"}</span>
           </button>
@@ -853,7 +982,7 @@ export class FeedController {
       ` : ""}
 
       <!-- Interactive Video Scrubber -->
-      ${item.videoUrl ? `
+      ${item.videoUrl || item.hlsUrl || item.cachedVideoUrl || item.needsResolution ? `
         <div class="video-scrubber-container">
           <div class="video-scrubber-track">
             <div class="video-scrubber-buffered"></div>
@@ -864,19 +993,6 @@ export class FeedController {
         </div>
       ` : ""}
     `;
-
-    // Video element initial configuration
-    const video = el.querySelector("video");
-    if (video) {
-      if (item.videoUrl && !item.hlsUrl) {
-        video.src = item.videoUrl;
-        video.load();
-      } else if (item.hlsUrl && video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = item.hlsUrl;
-        video.load();
-      }
-      // Note: Hls.js for item.hlsUrl is attached on-demand in playMedia() when the reel becomes active
-    }
 
     this.bindItemEvents(el, item, index);
     this.container.appendChild(el);
@@ -996,7 +1112,8 @@ export class FeedController {
     // Reddit audio track sync (backup for direct MP4 stream)
     if (video && audio) {
       video.addEventListener("play", () => {
-        if (!this.isMuted) {
+        // Do NOT play sidecar audio if video is playing via HLS (HLS already has synced audio muxed)
+        if (!this.isMuted && !video._hls) {
           audio.currentTime = video.currentTime;
           audio.play().catch(() => {});
         }
@@ -1005,15 +1122,20 @@ export class FeedController {
         audio.pause();
       });
       video.addEventListener("seeking", () => {
-        audio.currentTime = video.currentTime;
+        if (!video._hls) {
+          audio.currentTime = video.currentTime;
+        }
       });
       video.addEventListener("volumechange", () => {
-        audio.muted = video.muted;
-        audio.volume = video.volume;
+        if (!video._hls) {
+          audio.muted = video.muted;
+          audio.volume = video.volume;
+        }
       });
     }
 
     // Automatic failover if Redgifs stream is blocked by ISP during playback
+    // or if a Reddit fallback DASH rendition fails
     if (video) {
       video.addEventListener("error", (e) => {
         if (item.cachedVideoUrl && video.src !== item.cachedVideoUrl) {
@@ -1027,6 +1149,13 @@ export class FeedController {
           video.src = item.cachedVideoUrl;
           video.load();
           video.play().catch(() => {});
+        } else if (item.sourceType === "reddit_video" && video.src !== item.videoUrl && item.videoUrl) {
+          console.warn("[Reelit] Reddit DASH video failed, falling back to original MP4", e);
+          video.src = item.videoUrl;
+          video.load();
+          if (parseInt(el.dataset.index, 10) === this.currentIndex) {
+            video.play().catch(() => {});
+          }
         }
       });
     }
@@ -1056,6 +1185,25 @@ export class FeedController {
         if (nextBtn) {
           nextBtn.classList.toggle("hidden", currentSlide === totalSlides - 1);
         }
+
+        // Lazy-load media for active and next slide, and control video playback
+        const slides = galleryContainer.querySelectorAll(".gallery-slide");
+        slides.forEach((slide, sIdx) => {
+          const media = slide.querySelector("img, video");
+          if (!media) return;
+          if (sIdx === currentSlide || sIdx === currentSlide + 1) {
+            if (media.dataset.src && (!media.src || media.src !== media.dataset.src)) {
+              media.src = media.dataset.src;
+            }
+          }
+          if (media.tagName === "VIDEO") {
+            if (sIdx === currentSlide && parseInt(el.dataset.index, 10) === this.currentIndex) {
+              media.play().catch(() => {});
+            } else {
+              media.pause();
+            }
+          }
+        });
       };
 
       galleryContainer.addEventListener("scroll", () => {
@@ -1159,9 +1307,10 @@ export class FeedController {
 
     const updateProgress = () => {
       if (isDragging || !video.duration) return;
-      const pct = (video.currentTime / video.duration) * 100;
-      if (scrubberFill) scrubberFill.style.width = `${pct}%`;
-      if (scrubberThumb) scrubberThumb.style.left = `${pct}%`;
+      if (el.dataset.index != this.currentIndex) return;
+      const ratio = Math.max(0, Math.min(1, video.currentTime / video.duration));
+      if (scrubberFill) scrubberFill.style.transform = `scaleX(${ratio})`;
+      if (scrubberThumb) scrubberThumb.style.left = `${ratio * 100}%`;
       if (timeBubble) {
         timeBubble.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
       }
@@ -1169,10 +1318,11 @@ export class FeedController {
 
     const updateBuffer = () => {
       if (!video.duration || video.buffered.length === 0) return;
+      if (el.dataset.index != this.currentIndex) return;
       try {
         const bufEnd = video.buffered.end(video.buffered.length - 1);
-        const bufPct = Math.min(100, (bufEnd / video.duration) * 100);
-        if (scrubberBuffered) scrubberBuffered.style.width = `${bufPct}%`;
+        const bufRatio = Math.max(0, Math.min(1, bufEnd / video.duration));
+        if (scrubberBuffered) scrubberBuffered.style.transform = `scaleX(${bufRatio})`;
       } catch (_) {}
     };
 
@@ -1188,7 +1338,7 @@ export class FeedController {
       const rect = scrubberTrack.getBoundingClientRect();
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
       video.currentTime = ratio * video.duration;
-      if (scrubberFill) scrubberFill.style.width = `${ratio * 100}%`;
+      if (scrubberFill) scrubberFill.style.transform = `scaleX(${ratio})`;
       if (scrubberThumb) scrubberThumb.style.left = `${ratio * 100}%`;
       if (timeBubble) {
         timeBubble.textContent = `${formatTime(ratio * video.duration)} / ${formatTime(video.duration)}`;

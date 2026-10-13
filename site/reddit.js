@@ -20,6 +20,29 @@ export function cleanUrl(url) {
 }
 
 /**
+ * Pick an optimal image resolution from Reddit's preview resolutions
+ * to match screen size and prevent loading 4K camera originals.
+ */
+export function pickOptimalImageUrl(imageObj, targetWidth = 1080) {
+  if (!imageObj) return null;
+  const resolutions = imageObj.resolutions || [];
+  if (resolutions.length > 0) {
+    let best = resolutions[resolutions.length - 1];
+    for (const res of resolutions) {
+      if (res.width >= targetWidth) {
+        best = res;
+        break;
+      }
+    }
+    if (best?.url) return cleanUrl(best.url);
+  }
+  if (imageObj.source?.url) {
+    return cleanUrl(imageObj.source.url);
+  }
+  return null;
+}
+
+/**
  * Classify a raw Reddit post child object into a structured Reel item
  */
 export function classifyPost(rawChild) {
@@ -65,23 +88,23 @@ export function classifyPost(rawChild) {
                         effectivePost.media?.reddit_video ||
                         effectivePost.secure_media?.reddit_video;
     const cachedVideoUrl = previewVideo?.fallback_url ? cleanUrl(previewVideo.fallback_url) : null;
-    const thumbnailUrl = effectivePost.preview?.images?.[0]?.source?.url
-      ? cleanUrl(effectivePost.preview.images[0].source.url)
-      : (effectivePost.thumbnail && effectivePost.thumbnail.startsWith("http") ? effectivePost.thumbnail : null);
+    const thumbnailUrl = pickOptimalImageUrl(effectivePost.preview?.images?.[0], 480)
+      || (effectivePost.thumbnail && effectivePost.thumbnail.startsWith("http") ? effectivePost.thumbnail : null);
 
     return {
       ...baseInfo,
       mediaType: "redgifs",
-      sourceType: cachedVideoUrl ? "reddit_cache" : "redgifs_pending",
+      sourceType: "redgifs_pending",
       needsResolution: true,
       redgifsId,
       originalUrl: rawUrl,
       thumbnailUrl,
       cachedVideoUrl,
-      hlsUrl: null, // Reddit preview HLS manifests do not exist or 404; direct MP4 fallback_url is used
-      videoUrl: cachedVideoUrl,
-      hasAudio: false,
-      isIspFallback: !!cachedVideoUrl
+      hlsUrl: null,
+      videoUrl: null, // Don't download cached preview upfront while Redgifs is resolving!
+      hdUrl: null,
+      hasAudio: true,
+      isIspFallback: false
     };
   }
 
@@ -104,11 +127,15 @@ export function classifyPost(rawChild) {
       audioCandidates.push(`${baseUrl}/DASH_audio.mp4`);
     }
 
+    const thumbnailUrl = pickOptimalImageUrl(effectivePost.preview?.images?.[0], 480)
+      || (effectivePost.thumbnail && effectivePost.thumbnail.startsWith("http") ? effectivePost.thumbnail : null);
+
     return {
       ...baseInfo,
       mediaType: "reddit_video",
       sourceType: "reddit_video",
       videoUrl: fallbackUrl,
+      thumbnailUrl,
       hlsUrl: redditVideo.hls_url ? cleanUrl(redditVideo.hls_url) : null,
       audioCandidates,
       audioUrl: audioCandidates[0] || null,
@@ -141,7 +168,12 @@ export function classifyPost(rawChild) {
 
       let imgUrl = null;
       let isGif = false;
-      // Prioritize animated GIF if present, otherwise uncompressed image
+      let mp4Url = null;
+
+      // Prefer MP4 over animated GIF if present
+      if (meta.s?.mp4) {
+        mp4Url = cleanUrl(meta.s.mp4);
+      }
       if (meta.s?.gif) {
         imgUrl = cleanUrl(meta.s.gif);
         isGif = true;
@@ -151,9 +183,15 @@ export function classifyPost(rawChild) {
         imgUrl = cleanUrl(meta.p[meta.p.length - 1].u);
       }
 
-      if (imgUrl) {
+      // Poster preview from meta.p
+      const posterUrl = (meta.p && meta.p.length > 0) ? cleanUrl(meta.p[meta.p.length - 1].u) : (imgUrl || null);
+      const effectiveUrl = imgUrl || posterUrl || mp4Url;
+
+      if (effectiveUrl || mp4Url) {
         images.push({
-          url: imgUrl,
+          url: effectiveUrl,
+          posterUrl: posterUrl || effectiveUrl,
+          mp4Url: mp4Url || null,
           caption: item.caption || null,
           width: meta.s?.x,
           height: meta.s?.y,
@@ -179,16 +217,21 @@ export function classifyPost(rawChild) {
 
   if (isImageHint || hasImageExt) {
     let bestUrl = postUrl;
-    // If Reddit preview has higher quality uncropped source
-    if (post.preview?.images?.[0]?.source?.url) {
-      bestUrl = cleanUrl(post.preview.images[0].source.url);
+    const targetWidth = typeof window !== "undefined" && window.innerWidth
+      ? Math.min(Math.round(window.innerWidth * (window.devicePixelRatio || 1.5)), 1080)
+      : 1080;
+    const optimal = pickOptimalImageUrl(post.preview?.images?.[0], targetWidth);
+    if (optimal) {
+      bestUrl = optimal;
     }
+    const thumb = pickOptimalImageUrl(post.preview?.images?.[0], 480);
 
     return {
       ...baseInfo,
       mediaType: "image",
       sourceType: "image",
-      imageUrl: cleanUrl(bestUrl)
+      imageUrl: cleanUrl(bestUrl),
+      thumbnailUrl: thumb || cleanUrl(bestUrl)
     };
   }
 
@@ -217,7 +260,7 @@ export function buildRedditUrl({
   sort = "best",
   t = "day",
   after = null,
-  limit = 50
+  limit = 25
 } = {}) {
   const cleanSub = (subreddit || "").trim().replace(/^r\//i, "");
   const cleanUser = (user || "").trim().replace(/^u\//i, "");
@@ -299,13 +342,30 @@ export async function fetchFeed(options = {}) {
 
   const isHomeFeed = !options.subreddit && !options.user;
   const items = [];
+  const joinedSubs = [];
   for (const child of children) {
     const item = classifyPost(child);
     if (item) {
       if (isHomeFeed && item.subreddit) {
-        setTargetJoined(item.subreddit, "sub", true);
+        joinedSubs.push(item.subreddit);
       }
       items.push(item);
+    }
+  }
+
+  if (joinedSubs.length > 0) {
+    const set = getJoinedTargets();
+    let changed = false;
+    for (const sub of joinedSubs) {
+      const clean = String(sub).trim().toLowerCase().replace(/^(?:r|u)\//, "");
+      const key = `sub:${clean}`;
+      if (!set.has(key)) {
+        set.add(key);
+        changed = true;
+      }
+    }
+    if (changed) {
+      saveJoinedTargets(set);
     }
   }
 

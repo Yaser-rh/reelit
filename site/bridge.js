@@ -170,8 +170,9 @@ class ExtensionBridge {
   }
 
   // Convenience helper for Redgifs resolution
-  async resolveRedgifs(urlOrId) {
-    return await this.send("RESOLVE_REDGIFS", { url: urlOrId });
+  async resolveRedgifs(payload) {
+    const payloadObj = typeof payload === "string" ? { url: payload } : payload;
+    return await this.send("RESOLVE_REDGIFS", payloadObj);
   }
 
   // Convenience helper for saving/unsaving Reddit post

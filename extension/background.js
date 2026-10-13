@@ -154,13 +154,14 @@ async function verifyVideoUrl(url) {
 // Multi-strategy Redgifs resolver
 async function resolveRedgifs(payload) {
   const rawInput = typeof payload === "string" ? payload : payload?.url || payload?.id;
+  const hasCachedVideo = typeof payload === "object" && Boolean(payload?.hasCachedVideo);
   const gifId = extractRedgifsId(rawInput);
 
   if (!gifId) {
     throw new Error(`Invalid Redgifs input: "${rawInput}"`);
   }
 
-  // Strategy 1: Official Redgifs API with temporary token (HD video with audio)
+  // Strategy 1: Official Redgifs API with temporary token (prefer SD for fast playback & low data)
   try {
     const token = await getRedgifsToken();
     if (token) {
@@ -174,11 +175,17 @@ async function resolveRedgifs(payload) {
       if (apiRes.ok) {
         const apiData = await apiRes.json();
         const urls = apiData?.gif?.urls;
-        const candidate = urls?.hd || urls?.sd;
+        // Prefer SD (mobile stream) for playback: loads 5x-10x faster and saves huge data.
+        // Keep HD url explicitly for download / full quality.
+        const sdUrl = urls?.sd || null;
+        const hdUrl = urls?.hd || null;
+        const candidate = sdUrl || hdUrl;
         if (candidate) {
           return {
             id: gifId,
             videoUrl: candidate,
+            sdUrl,
+            hdUrl,
             thumbnailUrl: urls?.thumbnail || urls?.poster || null,
             width: apiData?.gif?.width,
             height: apiData?.gif?.height,
@@ -192,106 +199,138 @@ async function resolveRedgifs(payload) {
     console.warn("Redgifs API strategy timed out or blocked by ISP:", err.message);
   }
 
-  // Strategy 2: Fetch Redgifs iframe page HTML (/ifr/{id})
-  try {
-    const ifrUrl = `https://www.redgifs.com/ifr/${encodeURIComponent(gifId)}`;
-    const pageRes = await fetchWithTimeout(ifrUrl, {
-      headers: {
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-      }
-    }, 2500);
-
-    if (pageRes.ok) {
-      const html = await pageRes.text();
-      const patterns = [
-        /<source\s+[^>]*src=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i,
-        /<video\s+[^>]*src=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i,
-        /"videoUrl"\s*:\s*"(https:\/\/[^"]+\.mp4[^"]*)"/i,
-        /"contentUrl"\s*:\s*"(https:\/\/[^"]+\.mp4[^"]*)"/i,
-        /https:\/\/[a-zA-Z0-9_\-.]+\.redgifs\.com\/[a-zA-Z0-9_\-]+\.mp4/gi
-      ];
-
-      for (const pattern of patterns) {
-        const match = html.match(pattern);
-        if (match) {
-          const matchedUrl = match[1] || match[0];
-          const cleanUrl = matchedUrl.replace(/\\u002F/g, "/").replace(/\\\//g, "/");
-          if (cleanUrl.startsWith("http")) {
-            return {
-              id: gifId,
-              videoUrl: cleanUrl,
-              hasAudio: true,
-              strategy: "iframe_scrape"
-            };
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("Redgifs iframe strategy timed out or blocked by ISP:", err.message);
-  }
-
-  // Strategy 3: Fetch Redgifs watch page HTML and parse
-  try {
-    const watchUrl = `https://www.redgifs.com/watch/${encodeURIComponent(gifId)}`;
-    const pageRes = await fetchWithTimeout(watchUrl, {
-      headers: {
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-      }
-    }, 2000);
-
-    if (pageRes.ok) {
-      const html = await pageRes.text();
-      const patterns = [
-        /<meta\s+property=["']og:video["']\s+content=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i,
-        /<meta\s+name=["']twitter:player:stream["']\s+content=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i,
-        /"videoUrl"\s*:\s*"(https:\/\/[^"]+\.mp4[^"]*)"/i,
-        /"contentUrl"\s*:\s*"(https:\/\/[^"]+\.mp4[^"]*)"/i,
-        /https:\/\/[a-zA-Z0-9_\-.]+\.redgifs\.com\/[a-zA-Z0-9_\-]+\.mp4/gi
-      ];
-
-      for (const pattern of patterns) {
-        const match = html.match(pattern);
-        if (match) {
-          const matchedUrl = match[1] || match[0];
-          const cleanUrl = matchedUrl.replace(/\\u002F/g, "/").replace(/\\\//g, "/");
-          if (cleanUrl.startsWith("http")) {
-            return {
-              id: gifId,
-              videoUrl: cleanUrl,
-              strategy: "scrape"
-            };
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("Redgifs scrape strategy failed or timed out:", err.message);
-  }
-
-  // Strategy 4: Concurrent Direct CDN probe across top hosts
-  const cdnCandidates = [
+  // Strategy 4: Direct CDN probe across top hosts (strictly prioritizing mobile stream)
+  const mobileCandidates = [
+    `https://media.redgifs.com/${gifId.toLowerCase()}-mobile.mp4`,
+    `https://files.redgifs.com/${gifId.toLowerCase()}-mobile.mp4`
+  ];
+  const hdCandidates = [
     `https://media.redgifs.com/${gifId.toLowerCase()}.mp4`,
     `https://files.redgifs.com/${gifId.toLowerCase()}.mp4`,
     `https://thumbs2.redgifs.com/${gifId.toLowerCase()}.mp4`
   ];
 
   try {
-    const validUrl = await Promise.any(
-      cdnCandidates.map(async (candidate) => {
+    const validMobile = await Promise.any(
+      mobileCandidates.map(async (candidate) => {
         const isVideo = await verifyVideoUrl(candidate);
         if (isVideo) return candidate;
         throw new Error("Invalid CDN URL");
       })
     );
-    if (validUrl) {
+    if (validMobile) {
       return {
         id: gifId,
-        videoUrl: validUrl,
-        strategy: "cdn_probe"
+        videoUrl: validMobile,
+        sdUrl: validMobile,
+        hdUrl: validMobile.replace("-mobile.mp4", ".mp4"),
+        hasAudio: true,
+        strategy: "cdn_probe_mobile"
       };
     }
-  } catch (_) {}
+  } catch (_) {
+    try {
+      const validHd = await Promise.any(
+        hdCandidates.map(async (candidate) => {
+          const isVideo = await verifyVideoUrl(candidate);
+          if (isVideo) return candidate;
+          throw new Error("Invalid CDN URL");
+        })
+      );
+      if (validHd) {
+        return {
+          id: gifId,
+          videoUrl: validHd,
+          sdUrl: null,
+          hdUrl: validHd,
+          hasAudio: true,
+          strategy: "cdn_probe_hd"
+        };
+      }
+    } catch (_) {}
+  }
+
+  // If Reddit preview cache is already available, skip slow HTML scraping to avoid UI freezes
+  if (!hasCachedVideo) {
+    // Strategy 2: Fetch Redgifs iframe page HTML (/ifr/{id})
+    try {
+      const ifrUrl = `https://www.redgifs.com/ifr/${encodeURIComponent(gifId)}`;
+      const pageRes = await fetchWithTimeout(ifrUrl, {
+        headers: {
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+      }, 2500);
+
+      if (pageRes.ok) {
+        const html = await pageRes.text();
+        const patterns = [
+          /<source\s+[^>]*src=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i,
+          /<video\s+[^>]*src=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i,
+          /"videoUrl"\s*:\s*"(https:\/\/[^"]+\.mp4[^"]*)"/i,
+          /"contentUrl"\s*:\s*"(https:\/\/[^"]+\.mp4[^"]*)"/i,
+          /https:\/\/[a-zA-Z0-9_\-.]+\.redgifs\.com\/[a-zA-Z0-9_\-]+\.mp4/gi
+        ];
+
+        for (const pattern of patterns) {
+          const match = html.match(pattern);
+          if (match) {
+            const matchedUrl = match[1] || match[0];
+            const cleanUrl = matchedUrl.replace(/\\u002F/g, "/").replace(/\\\//g, "/");
+            if (cleanUrl.startsWith("http")) {
+              return {
+                id: gifId,
+                videoUrl: cleanUrl,
+                hdUrl: cleanUrl,
+                hasAudio: true,
+                strategy: "iframe_scrape"
+              };
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Redgifs iframe strategy timed out or blocked by ISP:", err.message);
+    }
+
+    // Strategy 3: Fetch Redgifs watch page HTML and parse
+    try {
+      const watchUrl = `https://www.redgifs.com/watch/${encodeURIComponent(gifId)}`;
+      const pageRes = await fetchWithTimeout(watchUrl, {
+        headers: {
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+      }, 2000);
+
+      if (pageRes.ok) {
+        const html = await pageRes.text();
+        const patterns = [
+          /<meta\s+property=["']og:video["']\s+content=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i,
+          /<meta\s+name=["']twitter:player:stream["']\s+content=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i,
+          /"videoUrl"\s*:\s*"(https:\/\/[^"]+\.mp4[^"]*)"/i,
+          /"contentUrl"\s*:\s*"(https:\/\/[^"]+\.mp4[^"]*)"/i,
+          /https:\/\/[a-zA-Z0-9_\-.]+\.redgifs\.com\/[a-zA-Z0-9_\-]+\.mp4/gi
+        ];
+
+        for (const pattern of patterns) {
+          const match = html.match(pattern);
+          if (match) {
+            const matchedUrl = match[1] || match[0];
+            const cleanUrl = matchedUrl.replace(/\\u002F/g, "/").replace(/\\\//g, "/");
+            if (cleanUrl.startsWith("http")) {
+              return {
+                id: gifId,
+                videoUrl: cleanUrl,
+                hdUrl: cleanUrl,
+                strategy: "scrape"
+              };
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Redgifs scrape strategy failed or timed out:", err.message);
+    }
+  }
 
   // Final Fallback: Return responsive iframe embed instead of throwing error
   return {

@@ -87,14 +87,42 @@ let currentAuthor = "";
 let previousFeed = { subreddit: "", sort: "best", time: "day" };
 let currentSessionInfo = null;
 
-// Debug logging helper
+// Debug logging helper (in-memory ring buffer to eliminate DOM writes & reflows while panel is closed)
+const MAX_DEBUG_LOGS = 60;
+const debugLogBuffer = [];
+
+function renderDebugLogs() {
+  if (!debugLogs) return;
+  debugLogs.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  for (const line of debugLogBuffer) {
+    const entry = document.createElement("div");
+    entry.textContent = line;
+    frag.appendChild(entry);
+  }
+  debugLogs.appendChild(frag);
+  if (debugPanel) debugPanel.scrollTop = debugPanel.scrollHeight;
+}
+
 function logDebug(message) {
   const time = new Date().toLocaleTimeString();
-  const entry = document.createElement("div");
-  entry.textContent = `[${time}] ${message}`;
-  debugLogs?.appendChild(entry);
-  if (debugPanel) debugPanel.scrollTop = debugPanel.scrollHeight;
+  const line = `[${time}] ${message}`;
+  debugLogBuffer.push(line);
+  if (debugLogBuffer.length > MAX_DEBUG_LOGS) {
+    debugLogBuffer.shift();
+  }
   console.log(`[Reelit] ${message}`);
+
+  // Only touch the DOM if debug panel is open
+  if (debugPanel?.classList.contains("open")) {
+    const entry = document.createElement("div");
+    entry.textContent = line;
+    debugLogs?.appendChild(entry);
+    while (debugLogs?.children.length > MAX_DEBUG_LOGS) {
+      debugLogs.removeChild(debugLogs.firstChild);
+    }
+    debugPanel.scrollTop = debugPanel.scrollHeight;
+  }
 }
 
 // Show toast message
@@ -240,7 +268,7 @@ saveModal?.addEventListener("click", (e) => {
 saveActionDownload?.addEventListener("click", async () => {
   if (!currentSaveItem) return;
   const item = currentSaveItem;
-  const downloadUrl = item.videoUrl || item.imageUrl || (item.images && item.images[0]?.url) || item.cachedVideoUrl;
+  const downloadUrl = item.hdUrl || item.videoUrl || item.imageUrl || (item.images && item.images[0]?.url) || item.cachedVideoUrl;
 
   if (!downloadUrl) {
     showToast("No downloadable media URL available");
@@ -395,7 +423,11 @@ function toggleStatusPopover() {
 
 function toggleDebugPanel() {
   if (!debugPanel) return;
+  const willOpen = !debugPanel.classList.contains("open");
   debugPanel.classList.toggle("open");
+  if (willOpen) {
+    renderDebugLogs();
+  }
 }
 
 function closeDebugPanel() {
@@ -1065,14 +1097,23 @@ bridge.onStatusChange((status, details) => {
       }
       if (session?.loggedIn) {
         logDebug(`Reddit session: Logged in as ${session.username || "user"} (${session.cookieCount} cookies detected). Bridge version: v${ver}`);
-        syncUserSubscriptions().then(() => {
-          logDebug("User subscriptions synchronized from Reddit.");
-          if (currentSubreddit) {
-            const isJoined = isTargetJoined(currentSubreddit, "sub");
-            updateSubHeaderJoinButtonState(currentSubreddit, isJoined);
-            feedController.updateTargetButtons(currentSubreddit, "sub", isJoined);
-          }
-        });
+        // Defer subscription sync so it does not compete with initial video streaming & decoder startup
+        const deferSync = () => {
+          syncUserSubscriptions().then(() => {
+            logDebug("User subscriptions synchronized from Reddit.");
+            if (currentSubreddit) {
+              const isJoined = isTargetJoined(currentSubreddit, "sub");
+              updateSubHeaderJoinButtonState(currentSubreddit, isJoined);
+              feedController.updateTargetButtons(currentSubreddit, "sub", isJoined);
+            }
+          });
+        };
+
+        if (typeof window.requestIdleCallback === "function") {
+          window.requestIdleCallback(deferSync, { timeout: 4000 });
+        } else {
+          setTimeout(deferSync, 3500);
+        }
       } else {
         logDebug(`Reddit session: Guest mode. Bridge version: v${ver}`);
       }
