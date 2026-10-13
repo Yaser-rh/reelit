@@ -14,6 +14,28 @@ async function getHls() {
   return HlsModule;
 }
 
+function isHlsSource(url) {
+  if (!url) return false;
+  const path = String(url).split(/[?#]/)[0];
+  return /\.m3u8$/i.test(path);
+}
+
+// hls.js attaches a blob: URL. Safari plays the playlist on the element itself.
+function isHlsDriving(video) {
+  if (!video) return false;
+  if (video._hls) return true;
+  return isHlsSource(video.currentSrc) || isHlsSource(video.getAttribute("src"));
+}
+
+function canPlayNativeHls(video) {
+  if (!video || typeof video.canPlayType !== "function") return false;
+  const types = [
+    video.canPlayType("application/vnd.apple.mpegurl"),
+    video.canPlayType("application/x-mpegURL")
+  ];
+  return types.some((value) => value === "probably" || value === "maybe");
+}
+
 const SEEN_STORAGE_KEY = "reelit_seen_posts_v1";
 
 function getStoredSeenIds() {
@@ -54,6 +76,7 @@ export class FeedController {
     this.isLoading = false;
     this.hasMore = true;
     this.after = null;
+    this._feedGen = 0;
 
     // Viewed reels tracking for dynamic feed freshness & rotation
     this.seenPostIds = getStoredSeenIds();
@@ -150,7 +173,21 @@ export class FeedController {
   }
 
   handleItemVisible(index, element) {
-    if (this.currentIndex === index) return;
+    // A visibility dip pauses the current reel without changing index.
+    // Resume it unless the viewer explicitly tapped pause.
+    if (this.currentIndex === index) {
+      element.classList.add("is-current");
+      const gallery = element.querySelector(".gallery-container");
+      if (gallery) {
+        if (gallery._userPaused) return;
+        this.syncGallery(element, true);
+        return;
+      }
+      const video = element.querySelector("video");
+      if (video?._userPaused) return;
+      this.playMedia(element);
+      return;
+    }
     const prevIndex = this.currentIndex;
     this.previousIndex = prevIndex;
     this.currentIndex = index;
@@ -163,13 +200,20 @@ export class FeedController {
 
     this.onDebugLog(`Active Reel: #${index} - ${currentItem?.title?.substring(0, 30)}...`);
 
-    // O(1) pause previous reel
+    // O(1) pause previous reel and drop any HLS load still in flight
     if (prevIndex >= 0 && prevIndex !== index) {
       const prevEl = this.renderedElements.get(prevIndex);
       if (prevEl) {
-        this.pauseMedia(prevEl);
+        prevEl.classList.remove("is-current");
+        this.pauseMedia(prevEl, { cancelLoad: true });
       }
     }
+    element.classList.add("is-current");
+
+    const activeVideo = element.querySelector(".gallery-container")
+      ? null
+      : element.querySelector("video");
+    if (activeVideo) activeVideo._userPaused = false;
 
     // Mount and play active reel
     this.mountVideo(index, true);
@@ -205,6 +249,15 @@ export class FeedController {
 
     const wrapper = el.querySelector(".media-wrapper");
     if (!wrapper) return;
+
+    if (el.querySelector(".gallery-container")) {
+      if (autoPlay) {
+        const gallery = el.querySelector(".gallery-container");
+        if (gallery) gallery._userPaused = false;
+        this.syncGallery(el, true);
+      }
+      return;
+    }
 
     const hasVideo = Boolean(item.videoUrl || item.hlsUrl || item.cachedVideoUrl);
     if (!hasVideo && !item.redgifsId) return;
@@ -242,26 +295,22 @@ export class FeedController {
     const el = this.renderedElements.get(index);
     if (!el) return;
 
-    this.pauseMedia(el);
+    this.pauseMedia(el, { cancelLoad: true });
 
-    const video = el.querySelector("video");
-    if (video) {
-      video._hlsLoading = false;
-      video._hlsCanceled = true;
+    el.querySelectorAll("video").forEach((video) => {
       if (video._hls) {
         video._hls.destroy();
         video._hls = null;
       }
-      if (video.src) {
+      if (video.getAttribute("src")) {
         video.removeAttribute("src");
         video.load();
       }
-    }
+    });
 
-    const audio = el.querySelector("audio");
-    if (audio) {
+    el.querySelectorAll("audio").forEach((audio) => {
       audio.pause();
-    }
+    });
   }
 
   recordSeenItem(item) {
@@ -277,37 +326,83 @@ export class FeedController {
   }
 
   handleItemHidden(index, element) {
-    this.pauseMedia(element);
+    // A dip below the visible threshold while this reel is still current
+    // only pauses. Cancel the HLS load once another reel has taken over.
+    this.pauseMedia(element, { cancelLoad: index !== this.currentIndex });
+  }
+
+  assignDirectMp4(video, item) {
+    if (!video || !item?.videoUrl) return false;
+    if (video._hls) {
+      video._hls.destroy();
+      video._hls = null;
+    }
+    video.src = item.videoUrl;
+    video.load();
+    return true;
+  }
+
+  syncSidecar(video, audio) {
+    if (!audio || !video) return;
+    if (isHlsDriving(video)) {
+      if (!audio.paused) audio.pause();
+      return;
+    }
+    audio.volume = 1.0;
+    audio.muted = this.isMuted;
+    if (!this.isMuted && !video.paused) {
+      audio.currentTime = video.currentTime;
+      audio.play().catch(() => {});
+    }
   }
 
   async playMedia(element) {
+    const gallery = element.querySelector(".gallery-container");
+    if (gallery) {
+      if (gallery._userPaused) return;
+      this.syncGallery(element, true);
+      return;
+    }
+
     const video = element.querySelector("video");
     const audio = element.querySelector("audio");
     const index = parseInt(element.dataset.index, 10);
     const item = this.items[index];
     if (!item || !video) return;
+    if (video._userPaused) return;
 
     video.volume = 1.0;
     video.muted = this.isMuted;
 
+    const stillCurrent = () =>
+      video.isConnected &&
+      parseInt(element.dataset.index, 10) === this.currentIndex &&
+      !video._userPaused;
+
     // On-demand dynamic HLS initialization for Reddit videos
     if (item.hlsUrl) {
-      if (video._hlsLoading || video._hls) {
-        if (video._hls && video.paused && index === this.currentIndex) {
+      if (video._hls) {
+        if (stillCurrent()) {
           video._hls.startLoad();
           video.play().catch(() => {});
         }
         return;
       }
 
-      video._hlsLoading = true;
-      video._hlsCanceled = false;
+      // A load is already in flight for this reel. Let it finish.
+      if (video._hlsAwaiting && video._hlsGen === video._hlsAwaiting && index === this.currentIndex) {
+        return;
+      }
+
+      const gen = (video._hlsGen || 0) + 1;
+      video._hlsGen = gen;
+      video._hlsAwaiting = gen;
 
       const Hls = await getHls();
 
-      // Guard: Swiped away, unmounted, or canceled while awaiting HLS module
-      if (video._hlsCanceled || index !== this.currentIndex || !video.isConnected) {
-        video._hlsLoading = false;
+      // Swiped away, unmounted, or a newer playMedia call owns this element.
+      if (video._hlsGen !== gen || !stillCurrent()) {
+        if (video._hlsAwaiting === gen) video._hlsAwaiting = 0;
         return;
       }
 
@@ -324,8 +419,7 @@ export class FeedController {
           enableWorker: true
         });
 
-        // Detach any previous src before attaching HLS
-        if (video.src) {
+        if (video.getAttribute("src")) {
           video.removeAttribute("src");
           video.load();
         }
@@ -333,40 +427,46 @@ export class FeedController {
         hls.loadSource(item.hlsUrl);
         hls.attachMedia(video);
         video._hls = hls;
-        video._hlsLoading = false;
+        if (video._hlsAwaiting === gen) video._hlsAwaiting = 0;
 
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (parseInt(element.dataset.index, 10) === this.currentIndex) {
-            const playPromise = video.play();
-            if (playPromise !== undefined) {
-              playPromise.catch(() => {
-                if (!this.isMuted) {
-                  video.muted = true;
-                  video.play().catch(() => {});
-                }
-              });
-            }
+          if (video._hlsGen !== gen || !stillCurrent()) return;
+          const playPromise = video.play();
+          if (playPromise !== undefined) {
+            playPromise.catch(() => {
+              if (!stillCurrent() || this.isMuted) return;
+              this.applyAutoplayMute(element);
+              video.muted = true;
+              video.play().catch(() => {});
+            });
           }
         });
 
         hls.on(Hls.Events.ERROR, (event, data) => {
-          if (data.fatal) {
-            console.warn("HLS fatal error, falling back to direct MP4 videoUrl", data);
-            hls.destroy();
-            video._hls = null;
-            video._hlsLoading = false;
-            if (item.videoUrl) {
-              video.src = item.videoUrl;
-              video.load();
-              if (parseInt(element.dataset.index, 10) === this.currentIndex) {
-                video.play().catch(() => {});
-              }
-            }
+          if (!data.fatal || video._hlsGen !== gen) return;
+          console.warn("HLS fatal error, falling back to direct MP4 videoUrl", data);
+          hls.destroy();
+          if (video._hls === hls) video._hls = null;
+          if (item.videoUrl && stillCurrent() && this.assignDirectMp4(video, item)) {
+            video.play().then(() => {
+              if (stillCurrent()) this.syncSidecar(video, audio);
+            }).catch(() => {});
           }
         });
         return;
-      } else {
-        video._hlsLoading = false;
+      }
+
+      if (video._hlsAwaiting === gen) video._hlsAwaiting = 0;
+      if (!stillCurrent()) return;
+
+      // Safari plays HLS itself. Everywhere else, use the Reddit MP4.
+      if (canPlayNativeHls(video)) {
+        if (video.getAttribute("src") !== item.hlsUrl) {
+          video.src = item.hlsUrl;
+          video.load();
+        }
+      } else if (!this.assignDirectMp4(video, item)) {
+        return;
       }
     } else if (item.videoUrl && (!video.src || video.src !== item.videoUrl)) {
       video.src = item.videoUrl;
@@ -376,61 +476,128 @@ export class FeedController {
     const playPromise = video.play();
     if (playPromise !== undefined) {
       playPromise.catch((err) => {
-        if (!this.isMuted) {
-          console.warn("Unmuted autoplay restricted by browser policy, falling back to muted:", err);
-          video.muted = true;
-          video.play().catch(() => {});
-        }
+        if (!stillCurrent() || this.isMuted) return;
+        console.warn("Unmuted autoplay restricted by browser policy, falling back to muted:", err);
+        this.applyAutoplayMute(element);
+        video.muted = true;
+        video.play().catch(() => {});
       });
     }
 
-    // Sidecar audio: ONLY play if NOT playing via HLS (HLS already has synced audio muxed)
-    if (audio) {
-      if (video?._hls || item.hlsUrl) {
-        audio.pause();
-      } else {
-        audio.volume = 1.0;
-        audio.muted = this.isMuted;
-        if (!this.isMuted && !video.paused) {
-          audio.currentTime = video.currentTime;
-          audio.play().catch(() => {});
-        }
-      }
-    }
+    // Sidecar audio only for a direct MP4. A playlist already carries the audio.
+    this.syncSidecar(video, audio);
   }
 
-  pauseMedia(element) {
+  applyAutoplayMute(element) {
+    if (this.isMuted) return;
+    this.isMuted = true;
+    this.container.classList.toggle("is-muted", true);
+    const audio = element?.querySelector("audio");
+    if (audio) {
+      audio.muted = true;
+      if (!audio.paused) audio.pause();
+    }
+    const index = parseInt(element?.dataset.index, 10);
+    const item = this.items[index];
+    if (item) this.updateItemBadge(element, item);
+    this.onStatusUpdate({ isMuted: true });
+  }
+
+  pauseMedia(element, { cancelLoad = false } = {}) {
+    if (!element) return;
+
+    if (element.querySelector(".gallery-container")) {
+      this.syncGallery(element, false);
+      return;
+    }
+
     const video = element.querySelector("video");
     const audio = element.querySelector("audio");
 
     if (video) {
-      video._hlsCanceled = true;
-      video._hlsLoading = false;
-      if (!video.paused) {
-        video.pause();
-      }
-      if (video._hls) {
-        video._hls.stopLoad();
-      }
+      if (cancelLoad) video._hlsGen = (video._hlsGen || 0) + 1;
+      if (!video.paused) video.pause();
+      if (video._hls) video._hls.stopLoad();
     }
-    if (audio && !audio.paused) {
-      audio.pause();
-    }
+    if (audio && !audio.paused) audio.pause();
+  }
+
+  syncGallery(el, shouldPlay) {
+    const gallery = el.querySelector(".gallery-container");
+    if (!gallery) return;
+
+    const slides = gallery.querySelectorAll(".gallery-slide");
+    if (!slides.length) return;
+
+    const width = gallery.clientWidth || 1;
+    let current = Math.round(gallery.scrollLeft / width);
+    if (!Number.isFinite(current)) current = 0;
+    current = Math.max(0, Math.min(slides.length - 1, current));
+
+    const isThisReel = parseInt(el.dataset.index, 10) === this.currentIndex;
+    const allowPlay = shouldPlay && isThisReel;
+
+    slides.forEach((slide, sIdx) => {
+      const media = slide.querySelector("img, video");
+      if (!media) return;
+
+      const near = isThisReel && (sIdx === current || sIdx === current + 1);
+      if (near) {
+        const pending = media.dataset.src;
+        if (pending && media.dataset.loadedSrc !== pending) {
+          media.src = pending;
+          media.dataset.loadedSrc = pending;
+        }
+      }
+
+      if (media.tagName !== "VIDEO") return;
+
+      const isCurrent = allowPlay && sIdx === current;
+      if (isCurrent) {
+        media.play().catch(() => {});
+        return;
+      }
+
+      media.pause();
+      if (near) return;
+
+      // A user pause or a visibility dip keeps the open reel's files.
+      // Once another reel is current, drop slides that are not on screen.
+      if (isThisReel && !shouldPlay) return;
+
+      // Stop files for slides that are not on screen. The url stays in data-src.
+      const attrSrc = media.getAttribute("src");
+      if (attrSrc && !media.dataset.src) media.dataset.src = attrSrc;
+      if (media.getAttribute("src") || media.currentSrc) {
+        media.removeAttribute("src");
+        delete media.dataset.loadedSrc;
+        media.load();
+      }
+    });
   }
 
   toggleCurrentPlayback() {
     const currentEl = this.renderedElements.get(this.currentIndex);
     if (!currentEl) return;
 
+    const flash = currentEl.querySelector(".play-indicator-flash");
+    const gallery = currentEl.querySelector(".gallery-container");
+    if (gallery) {
+      gallery._userPaused = !gallery._userPaused;
+      this.syncGallery(currentEl, !gallery._userPaused);
+      this.showFlashIcon(flash, gallery._userPaused ? "pause" : "play");
+      return;
+    }
+
     const video = currentEl.querySelector("video");
     if (!video) return;
 
-    const flash = currentEl.querySelector(".play-indicator-flash");
-
     if (video.paused) {
+      video._userPaused = false;
       this.playMedia(currentEl);
       this.showFlashIcon(flash, "play");
     } else {
+      video._userPaused = true;
       this.pauseMedia(currentEl);
       this.showFlashIcon(flash, "pause");
     }
@@ -457,16 +624,18 @@ export class FeedController {
     const currentEl = targetElement || this.renderedElements.get(this.currentIndex);
     const item = this.items[this.currentIndex];
 
-    // Apply to current visible media
-    if (currentEl) {
+    // Apply to current visible media. Galleries stay muted and are not resumed here.
+    if (currentEl && !currentEl.querySelector(".gallery-container")) {
       const video = currentEl.querySelector("video");
       const audio = currentEl.querySelector("audio");
 
       if (video) {
         video.muted = this.isMuted;
         video.volume = 1.0;
-        if (!this.isMuted && video.paused) {
-          video.play().catch(() => {});
+        const isCurrent = currentEl === this.renderedElements.get(this.currentIndex);
+        if (!this.isMuted && video.paused && isCurrent) {
+          video._userPaused = false;
+          this.playMedia(currentEl);
         }
       }
 
@@ -475,7 +644,7 @@ export class FeedController {
         audio.volume = 1.0;
         if (this.isMuted) {
           audio.pause();
-        } else if (video && !video.paused && !video._hls) {
+        } else if (video && !video.paused && !isHlsDriving(video)) {
           audio.currentTime = video.currentTime;
           audio.play().catch(() => {});
         }
@@ -615,14 +784,18 @@ export class FeedController {
   }
 
   async loadInitialFeed(filter = {}) {
+    this._feedGen = (this._feedGen || 0) + 1;
     this.subreddit = filter.subreddit || "";
     this.user = filter.user || "";
     this.sort = filter.sort || (this.user ? "new" : (this.subreddit ? "hot" : "best"));
     this.timeFilter = filter.timeFilter || "day";
     this.after = null;
 
-    // Properly tear down all active video and HLS instances before clearing DOM
+    // Drop observer entries before the nodes leave the document. Far reel
+    // nodes stay mounted during a session. Recycle them only if a long
+    // session starts getting the phone killed.
     this.renderedElements.forEach((el, idx) => {
+      this.observer.unobserve(el);
       this.unmountVideo(idx);
     });
     this.renderedElements.clear();
@@ -630,12 +803,17 @@ export class FeedController {
     this.container.innerHTML = "";
     this.currentIndex = -1;
     this.hasMore = true;
+    // The previous page may still be in flight. Release the lock so this
+    // generation can fetch. That older call keeps its own generation and
+    // ignores the response.
+    this.isLoading = false;
 
     await this.loadMore();
   }
 
   async loadMore() {
     if (this.isLoading || !this.hasMore) return;
+    const gen = this._feedGen || 0;
     this.isLoading = true;
     this.onStatusUpdate({ isLoading: true });
 
@@ -653,6 +831,8 @@ export class FeedController {
         after: this.after,
         limit: batchLimit
       });
+
+      if (gen !== this._feedGen) return;
 
       let currentAfter = res.after;
       if (!currentAfter) {
@@ -716,19 +896,49 @@ export class FeedController {
       // If feed has very few items (e.g. fewer than 5) and more are available, top up seamlessly in the background
       if (this.items.length < 5 && this.hasMore) {
         setTimeout(() => {
-          if (!this.isLoading && this.hasMore) {
+          if (gen === this._feedGen && !this.isLoading && this.hasMore) {
             this.loadMore();
           }
         }, 200);
       }
 
     } catch (err) {
+      if (gen !== this._feedGen) return;
       console.error("Failed to load feed:", err);
       this.onStatusUpdate({ error: err.message });
       this.onDebugLog(`Feed fetch error: ${err.message}`);
     } finally {
+      if (gen !== this._feedGen) return;
       this.isLoading = false;
       this.onStatusUpdate({ isLoading: false });
+    }
+  }
+
+  applyResolvedRedgifs(item, resolved) {
+    if (resolved?.videoUrl) {
+      item.videoUrl = resolved.videoUrl;
+      item.hdUrl = resolved.hdUrl || resolved.videoUrl;
+      item.sdUrl = resolved.sdUrl || resolved.videoUrl;
+      item.thumbnailUrl = resolved.thumbnailUrl || item.thumbnailUrl;
+      item.sourceType = "redgifs_direct";
+      item.hasAudio = resolved.hasAudio !== false;
+      item.isIspFallback = false;
+      item.needsResolution = false;
+      return;
+    }
+    if (item.cachedVideoUrl) {
+      item.videoUrl = item.cachedVideoUrl;
+      item.hlsUrl = null;
+      item.sourceType = "reddit_cache";
+      item.isIspFallback = true;
+      item.hasAudio = false;
+      item.needsResolution = false;
+      return;
+    }
+    if (resolved?.embedUrl) {
+      item.embedUrl = resolved.embedUrl;
+      item.sourceType = "redgifs_iframe";
+      item.needsResolution = false;
     }
   }
 
@@ -743,84 +953,58 @@ export class FeedController {
       if (!item || !item.needsResolution || item._isResolving) continue;
 
       item._isResolving = true;
+      // One attempt per post. A timeout keeps the same promise for the late upgrade
+      // instead of starting a second resolve when the viewer swipes back.
+      item.needsResolution = false;
+      let resolvePromise = null;
       try {
         this.onDebugLog(`[Priority] Resolving Redgifs: ${item.originalUrl}`);
-        const resolvePromise = bridge.resolveRedgifs({
+        resolvePromise = bridge.resolveRedgifs({
           url: item.originalUrl,
           hasCachedVideo: Boolean(item.cachedVideoUrl)
         });
 
-        // Background handler for late resolution if the 6.5s timeout fired
-        resolvePromise.then((lateResult) => {
-          if (lateResult?.videoUrl && item.sourceType !== "redgifs_direct") {
-            this.onDebugLog(`[Priority] Late Redgifs resolved: upgrading #${idx}`);
-            item.videoUrl = lateResult.videoUrl;
-            item.hdUrl = lateResult.hdUrl || lateResult.videoUrl;
-            item.sdUrl = lateResult.sdUrl || lateResult.videoUrl;
-            item.thumbnailUrl = lateResult.thumbnailUrl || item.thumbnailUrl;
-            item.sourceType = "redgifs_direct";
-            item.hasAudio = lateResult.hasAudio !== false;
-            item.isIspFallback = false;
-            item.needsResolution = false;
-            if (el) {
-              this.updateReelMedia(el, item);
-              if (idx === this.currentIndex) {
-                this.mountVideo(idx, true);
-              }
-            }
-          }
-        }).catch(() => {});
-
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Redgifs bridge timeout")), 6500)
-        );
-        const resolved = await Promise.race([resolvePromise, timeoutPromise]);
-
-        if (resolved?.videoUrl) {
-          this.onDebugLog(`[Priority] Redgifs resolved: ready`);
-          item.videoUrl = resolved.videoUrl;
-          item.hdUrl = resolved.hdUrl || resolved.videoUrl;
-          item.sdUrl = resolved.sdUrl || resolved.videoUrl;
-          item.thumbnailUrl = resolved.thumbnailUrl || item.thumbnailUrl;
-          item.sourceType = "redgifs_direct";
-          item.hasAudio = resolved.hasAudio !== false;
-          item.isIspFallback = false;
-          item.needsResolution = false;
-        } else if (item.cachedVideoUrl) {
-          item.videoUrl = item.cachedVideoUrl;
-          item.sourceType = "reddit_cache";
-          item.isIspFallback = true;
-          item.hasAudio = false;
-          item.needsResolution = false;
-        } else if (resolved?.embedUrl) {
-          item.embedUrl = resolved.embedUrl;
-          item.sourceType = "redgifs_iframe";
-          item.needsResolution = false;
+        let timeoutId = 0;
+        const timeoutPromise = new Promise((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error("Redgifs bridge timeout")), 6500);
+        });
+        try {
+          const resolved = await Promise.race([resolvePromise, timeoutPromise]);
+          clearTimeout(timeoutId);
+          this.applyResolvedRedgifs(item, resolved);
+        } catch (err) {
+          clearTimeout(timeoutId);
+          throw err;
         }
       } catch (err) {
         this.onDebugLog(`[Priority] Redgifs fallback used: ${err.message}`);
+        const timedOut = String(err?.message || err).includes("timeout");
         if (item.cachedVideoUrl) {
-          // Play silent Reddit preview for immediate response without waiting indefinitely
           item.videoUrl = item.cachedVideoUrl;
           item.hlsUrl = null;
           item.sourceType = "reddit_cache";
           item.isIspFallback = true;
           item.hasAudio = false;
-          // Keep needsResolution true if it was merely a bridge timeout so background resolution can still upgrade it!
-          item.needsResolution = !err.message.includes("timeout");
+          item.needsResolution = false;
         } else if (item.redgifsId) {
           item.embedUrl = `https://www.redgifs.com/ifr/${item.redgifsId}?autoplay=0`;
           item.sourceType = "redgifs_iframe";
           item.needsResolution = false;
         }
+
+        if (timedOut && resolvePromise) {
+          resolvePromise.then((lateResult) => {
+            if (!lateResult?.videoUrl) return;
+            if (this.items[idx] !== item || item.sourceType === "redgifs_direct") return;
+            if (!el?.isConnected) return;
+            this.onDebugLog(`[Priority] Late Redgifs resolved: upgrading #${idx}`);
+            this.applyResolvedRedgifs(item, lateResult);
+            this.updateReelMedia(el, item);
+          }).catch(() => {});
+        }
       } finally {
         item._isResolving = false;
-        if (el) {
-          this.updateReelMedia(el, item);
-          if (idx === this.currentIndex) {
-            this.mountVideo(idx, true);
-          }
-        }
+        if (el?.isConnected) this.updateReelMedia(el, item);
       }
     }
   }
@@ -836,8 +1020,16 @@ export class FeedController {
     el.className = "feed-item";
     el.dataset.index = index;
 
-    // Ambient background
-    const bgUrl = item.imageUrl || item.thumbnailUrl || (item.images && item.images[0]?.url) || "";
+    // Ambient background. Gallery backdrops use the still poster, never the GIF file.
+    const firstSlide = item.images && item.images[0];
+    let slideBg = "";
+    if (firstSlide) {
+      const poster = firstSlide.posterUrl || "";
+      const posterIsGif = /\.gif($|\?)/i.test(poster);
+      if (poster && !(firstSlide.mp4Url && posterIsGif)) slideBg = poster;
+      else if (!firstSlide.mp4Url) slideBg = firstSlide.url || "";
+    }
+    const bgUrl = item.thumbnailUrl || item.imageUrl || slideBg || "";
     const backdropHtml = bgUrl ? `<div class="item-backdrop" style="background-image: url('${bgUrl}');"></div>` : "";
 
     // Media element
@@ -862,12 +1054,13 @@ export class FeedController {
           <div class="gallery-container">
             ${item.images.map((img, i) => {
               if (img.mp4Url) {
+                const poster = this.escapeHtml(img.posterUrl && !/\.gif($|\?)/i.test(img.posterUrl) ? img.posterUrl : "");
                 return `<div class="gallery-slide" data-slide="${i}">
-                  <video class="media-element" playsinline loop muted preload="${i === 0 ? "metadata" : "none"}" poster="${img.posterUrl || img.url || ""}" ${i <= 1 ? `src="${img.mp4Url}"` : `data-src="${img.mp4Url}"`}></video>
+                  <video class="media-element" playsinline loop muted preload="none" ${poster ? `poster="${poster}"` : ""} data-src="${this.escapeHtml(img.mp4Url)}"></video>
                 </div>`;
               } else {
                 return `<div class="gallery-slide" data-slide="${i}">
-                  <img class="media-element" ${i <= 1 ? `src="${img.url}"` : `data-src="${img.url}"`} loading="lazy" />
+                  <img class="media-element" data-src="${this.escapeHtml(img.url || "")}" alt="" />
                 </div>`;
               }
             }).join("")}
@@ -884,6 +1077,7 @@ export class FeedController {
               ${item.images.map((_, i) => `<div class="gallery-dot ${i === 0 ? "active" : ""}" data-slide="${i}"></div>`).join("")}
             </div>
           ` : ""}
+          <div class="play-indicator-flash"></div>
         </div>
       `;
     } else if (item.imageUrl) {
@@ -1022,7 +1216,12 @@ export class FeedController {
     wrapper?.addEventListener("click", (e) => {
       // Don't trigger if clicked on gallery scroll or buttons
       if (e.target.closest(".gallery-dots") || e.target.closest(".gallery-nav-btn")) return;
-      if (item.videoUrl) {
+      if (el._galleryDragged) {
+        el._galleryDragged = false;
+        return;
+      }
+      const gallery = el.querySelector(".gallery-container");
+      if (gallery || item.videoUrl || item.hlsUrl) {
         this.toggleCurrentPlayback();
       }
     });
@@ -1055,8 +1254,8 @@ export class FeedController {
       this.onStatusUpdate({ refreshFeed: true });
     });
 
-    // Wire video scrubber if video element is present
-    if (video) {
+    // Wire video scrubber if this reel has one main video. Gallery slides manage themselves.
+    if (video && !el.querySelector(".gallery-container")) {
       this.wireScrubber(el, video);
     }
 
@@ -1112,22 +1311,18 @@ export class FeedController {
     // Reddit audio track sync (backup for direct MP4 stream)
     if (video && audio) {
       video.addEventListener("play", () => {
-        // Do NOT play sidecar audio if video is playing via HLS (HLS already has synced audio muxed)
-        if (!this.isMuted && !video._hls) {
-          audio.currentTime = video.currentTime;
-          audio.play().catch(() => {});
-        }
+        this.syncSidecar(video, audio);
       });
       video.addEventListener("pause", () => {
         audio.pause();
       });
       video.addEventListener("seeking", () => {
-        if (!video._hls) {
+        if (!isHlsDriving(video)) {
           audio.currentTime = video.currentTime;
         }
       });
       video.addEventListener("volumechange", () => {
-        if (!video._hls) {
+        if (!isHlsDriving(video)) {
           audio.muted = video.muted;
           audio.volume = video.volume;
         }
@@ -1138,7 +1333,13 @@ export class FeedController {
     // or if a Reddit fallback DASH rendition fails
     if (video) {
       video.addEventListener("error", (e) => {
-        if (item.cachedVideoUrl && video.src !== item.cachedVideoUrl) {
+        // HLS plays from a blob: URL. Its own fatal handler picks the MP4.
+        // A media error while HLS is attached must not start that download.
+        if (video._hls) return;
+        const current = video.currentSrc || "";
+        if (!current || current.startsWith("blob:")) return;
+
+        if (item.cachedVideoUrl && current !== item.cachedVideoUrl && video.dataset.fallbackApplied !== item.cachedVideoUrl) {
           console.warn("[Reelit] Redgifs stream blocked by ISP. Failing over to Reddit cache.", e);
           this.onDebugLog(`ISP blocked Redgifs CDN -> Switched to Reddit cache: #${index}`);
           this.onStatusUpdate({ toast: "Redgifs blocked by ISP: playing Reddit preview" });
@@ -1146,14 +1347,21 @@ export class FeedController {
           item.isIspFallback = true;
           item.hasAudio = false;
           this.updateItemBadge(el, item);
+          video.dataset.fallbackApplied = item.cachedVideoUrl;
           video.src = item.cachedVideoUrl;
           video.load();
           video.play().catch(() => {});
-        } else if (item.sourceType === "reddit_video" && video.src !== item.videoUrl && item.videoUrl) {
+        } else if (
+          item.sourceType === "reddit_video" &&
+          item.videoUrl &&
+          current !== item.videoUrl &&
+          video.dataset.fallbackApplied !== item.videoUrl
+        ) {
           console.warn("[Reelit] Reddit DASH video failed, falling back to original MP4", e);
+          video.dataset.fallbackApplied = item.videoUrl;
           video.src = item.videoUrl;
           video.load();
-          if (parseInt(el.dataset.index, 10) === this.currentIndex) {
+          if (parseInt(el.dataset.index, 10) === this.currentIndex && !video._userPaused) {
             video.play().catch(() => {});
           }
         }
@@ -1186,24 +1394,7 @@ export class FeedController {
           nextBtn.classList.toggle("hidden", currentSlide === totalSlides - 1);
         }
 
-        // Lazy-load media for active and next slide, and control video playback
-        const slides = galleryContainer.querySelectorAll(".gallery-slide");
-        slides.forEach((slide, sIdx) => {
-          const media = slide.querySelector("img, video");
-          if (!media) return;
-          if (sIdx === currentSlide || sIdx === currentSlide + 1) {
-            if (media.dataset.src && (!media.src || media.src !== media.dataset.src)) {
-              media.src = media.dataset.src;
-            }
-          }
-          if (media.tagName === "VIDEO") {
-            if (sIdx === currentSlide && parseInt(el.dataset.index, 10) === this.currentIndex) {
-              media.play().catch(() => {});
-            } else {
-              media.pause();
-            }
-          }
-        });
+        this.syncGallery(el, !galleryContainer._userPaused);
       };
 
       galleryContainer.addEventListener("scroll", () => {
@@ -1235,25 +1426,36 @@ export class FeedController {
         });
       });
 
-      // Mouse drag to scroll horizontally
+      // Mouse drag to scroll horizontally. Pointer capture stays on this element,
+      // so a feed refresh does not leave a window mouseup listener behind.
       let isDown = false;
+      let dragged = false;
       let startX = 0;
       let scrollLeft = 0;
 
-      galleryContainer.addEventListener("mousedown", (e) => {
+      const endDrag = () => {
+        if (dragged) el._galleryDragged = true;
+        isDown = false;
+      };
+
+      galleryContainer.addEventListener("pointerdown", (e) => {
+        if (e.pointerType !== "mouse" || e.button !== 0) return;
+        el._galleryDragged = false;
         isDown = true;
+        dragged = false;
         startX = e.pageX - galleryContainer.offsetLeft;
         scrollLeft = galleryContainer.scrollLeft;
+        galleryContainer.setPointerCapture(e.pointerId);
       });
 
-      window.addEventListener("mouseup", () => {
-        isDown = false;
-      });
+      galleryContainer.addEventListener("pointerup", endDrag);
+      galleryContainer.addEventListener("pointercancel", endDrag);
 
-      galleryContainer.addEventListener("mousemove", (e) => {
-        if (!isDown) return;
+      galleryContainer.addEventListener("pointermove", (e) => {
+        if (!isDown || e.pointerType !== "mouse") return;
         e.preventDefault();
         const x = e.pageX - galleryContainer.offsetLeft;
+        if (Math.abs(x - startX) > 4) dragged = true;
         const walk = (x - startX) * 1.5;
         galleryContainer.scrollLeft = scrollLeft - walk;
       });
@@ -1305,23 +1507,34 @@ export class FeedController {
       return `${m}:${s < 10 ? "0" : ""}${s}`;
     };
 
-    const updateProgress = () => {
-      if (isDragging || !video.duration) return;
-      if (el.dataset.index != this.currentIndex) return;
-      const ratio = Math.max(0, Math.min(1, video.currentTime / video.duration));
-      if (scrubberFill) scrubberFill.style.transform = `scaleX(${ratio})`;
-      if (scrubberThumb) scrubberThumb.style.left = `${ratio * 100}%`;
+    const playableDuration = () => {
+      const duration = video.duration;
+      if (!Number.isFinite(duration) || duration <= 0) return 0;
+      return duration;
+    };
+
+    const paint = (ratio, duration) => {
+      const clamped = Math.max(0, Math.min(1, ratio));
+      if (scrubberFill) scrubberFill.style.transform = `scaleX(${clamped})`;
+      if (scrubberThumb) scrubberThumb.style.left = `${clamped * 100}%`;
       if (timeBubble) {
-        timeBubble.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+        timeBubble.textContent = `${formatTime(clamped * duration)} / ${formatTime(duration)}`;
       }
     };
 
+    const updateProgress = () => {
+      if (isDragging) return;
+      const duration = playableDuration();
+      if (!duration) return;
+      paint(video.currentTime / duration, duration);
+    };
+
     const updateBuffer = () => {
-      if (!video.duration || video.buffered.length === 0) return;
-      if (el.dataset.index != this.currentIndex) return;
+      const duration = playableDuration();
+      if (!duration || video.buffered.length === 0) return;
       try {
         const bufEnd = video.buffered.end(video.buffered.length - 1);
-        const bufRatio = Math.max(0, Math.min(1, bufEnd / video.duration));
+        const bufRatio = Math.max(0, Math.min(1, bufEnd / duration));
         if (scrubberBuffered) scrubberBuffered.style.transform = `scaleX(${bufRatio})`;
       } catch (_) {}
     };
@@ -1332,20 +1545,31 @@ export class FeedController {
       updateProgress();
       updateBuffer();
     });
+    video.addEventListener("durationchange", () => {
+      updateProgress();
+      updateBuffer();
+    });
+    video.addEventListener("seeked", updateProgress);
 
     const handleSeek = (clientX) => {
-      if (!scrubberTrack || !video.duration) return;
+      const duration = playableDuration();
+      if (!scrubberTrack || !duration) return;
       const rect = scrubberTrack.getBoundingClientRect();
+      if (!rect.width) return;
       const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-      video.currentTime = ratio * video.duration;
-      if (scrubberFill) scrubberFill.style.transform = `scaleX(${ratio})`;
-      if (scrubberThumb) scrubberThumb.style.left = `${ratio * 100}%`;
-      if (timeBubble) {
-        timeBubble.textContent = `${formatTime(ratio * video.duration)} / ${formatTime(video.duration)}`;
-      }
+      video.currentTime = ratio * duration;
+      paint(ratio, duration);
     };
 
-    scrubberTrack.addEventListener("mousedown", (e) => {
+    const endDrag = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      scrubberContainer.classList.remove("scrubbing");
+      updateProgress();
+    };
+
+    scrubberContainer.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
       e.stopPropagation();
       isDragging = true;
       scrubberContainer.classList.add("scrubbing");
@@ -1358,10 +1582,7 @@ export class FeedController {
       };
 
       const onMouseUp = () => {
-        if (isDragging) {
-          isDragging = false;
-          scrubberContainer.classList.remove("scrubbing");
-        }
+        endDrag();
         window.removeEventListener("mousemove", onMouseMove);
         window.removeEventListener("mouseup", onMouseUp);
       };
@@ -1370,24 +1591,29 @@ export class FeedController {
       window.addEventListener("mouseup", onMouseUp);
     });
 
-    scrubberTrack.addEventListener("touchstart", (e) => {
+    const onTouchMove = (e) => {
+      if (!isDragging || !e.touches[0]) return;
+      if (e.cancelable) e.preventDefault();
+      handleSeek(e.touches[0].clientX);
+    };
+
+    const onTouchEnd = () => {
+      endDrag();
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("touchcancel", onTouchEnd);
+    };
+
+    scrubberContainer.addEventListener("touchstart", (e) => {
+      if (isDragging) return;
       e.stopPropagation();
       isDragging = true;
       scrubberContainer.classList.add("scrubbing");
       if (e.touches[0]) handleSeek(e.touches[0].clientX);
+      window.addEventListener("touchmove", onTouchMove, { passive: false });
+      window.addEventListener("touchend", onTouchEnd);
+      window.addEventListener("touchcancel", onTouchEnd);
     }, { passive: true });
-
-    scrubberTrack.addEventListener("touchmove", (e) => {
-      if (isDragging && e.touches[0]) {
-        handleSeek(e.touches[0].clientX);
-      }
-    }, { passive: true });
-
-    scrubberTrack.addEventListener("touchend", (e) => {
-      e.stopPropagation();
-      isDragging = false;
-      scrubberContainer.classList.remove("scrubbing");
-    });
   }
 
   renderMarkdownText(text) {

@@ -124,29 +124,54 @@ function extractRedgifsId(input) {
   return clean || null;
 }
 
-// Verify that a video URL actually exists and serves video
-async function verifyVideoUrl(url) {
+function responseLooksLikeVideo(res) {
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("text/html") || contentType.includes("application/xhtml")) return false;
+  if (contentType.includes("video") || contentType.includes("octet-stream")) return true;
+  // A range response is media bytes. A 200 HTML block page is not, even when the URL ends in .mp4.
+  return res.status === 206;
+}
+
+// Stop a ranged probe from keeping a full MP4 when the server ignores Range.
+async function cancelResponseBody(res) {
   try {
-    const res = await fetchWithTimeout(url, {
+    await res?.body?.cancel();
+  } catch (_) {}
+}
+
+// Verify that a video URL actually exists and serves video.
+// Headers are enough. The body is cancelled so a 200 that ignores Range
+// cannot download the whole file. Playback fetches the winner on its own.
+async function verifyVideoUrl(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 2000);
+  let res = null;
+  try {
+    res = await fetch(url, {
       method: "GET",
       headers: {
         Range: "bytes=0-1024"
-      }
-    }, 2000);
-    const contentType = res.headers.get("content-type") || "";
-    if (res.ok || res.status === 206) {
-      if (contentType.includes("video") || contentType.includes("octet-stream") || url.endsWith(".mp4")) {
-        return true;
-      }
+      },
+      signal: controller.signal
+    });
+    if ((res.ok || res.status === 206) && responseLooksLikeVideo(res)) {
+      return true;
     }
   } catch (e) {
     try {
       const headRes = await fetchWithTimeout(url, { method: "HEAD" }, 2000);
-      if (headRes.ok) {
-        const ct = headRes.headers.get("content-type") || "";
-        return ct.includes("video") || url.endsWith(".mp4");
+      try {
+        if (headRes.ok && responseLooksLikeVideo(headRes)) {
+          return true;
+        }
+      } finally {
+        await cancelResponseBody(headRes);
       }
     } catch (ignore) {}
+  } finally {
+    clearTimeout(timer);
+    await cancelResponseBody(res);
+    controller.abort();
   }
   return false;
 }
@@ -206,8 +231,7 @@ async function resolveRedgifs(payload) {
   ];
   const hdCandidates = [
     `https://media.redgifs.com/${gifId.toLowerCase()}.mp4`,
-    `https://files.redgifs.com/${gifId.toLowerCase()}.mp4`,
-    `https://thumbs2.redgifs.com/${gifId.toLowerCase()}.mp4`
+    `https://files.redgifs.com/${gifId.toLowerCase()}.mp4`
   ];
 
   try {

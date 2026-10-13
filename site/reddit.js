@@ -73,7 +73,8 @@ export function classifyPost(rawChild) {
   };
 
   const domain = (post.domain || "").toLowerCase();
-  const postUrl = (post.url || "").toLowerCase();
+  const originalPostUrl = post.url || "";
+  const postUrl = originalPostUrl.toLowerCase();
   const destUrl = (post.url_overridden_by_dest || "").toLowerCase();
   const isRedgifs = domain.includes("redgifs.com") || postUrl.includes("redgifs.com") || destUrl.includes("redgifs.com");
 
@@ -148,9 +149,9 @@ export function classifyPost(rawChild) {
     };
   }
 
-  // 3. Imgur gifv / mp4
+  // 3. Imgur gifv / mp4. The id is case-sensitive, so only the suffix check is lowercased.
   if (domain.includes("imgur.com") && postUrl.endsWith(".gifv")) {
-    const mp4Url = postUrl.replace(/\.gifv$/i, ".mp4");
+    const mp4Url = originalPostUrl.replace(/\.gifv$/i, ".mp4");
     return {
       ...baseInfo,
       mediaType: "video",
@@ -216,7 +217,7 @@ export function classifyPost(rawChild) {
   const hasImageExt = /\.(jpe?g|png|webp|gif)$/i.test(postUrl);
 
   if (isImageHint || hasImageExt) {
-    let bestUrl = postUrl;
+    let bestUrl = originalPostUrl;
     const targetWidth = typeof window !== "undefined" && window.innerWidth
       ? Math.min(Math.round(window.innerWidth * (window.devicePixelRatio || 1.5)), 1080)
       : 1080;

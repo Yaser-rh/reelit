@@ -1,7 +1,7 @@
 # Reelit: Implementation Log & Developer Handoff
 
 > **Project**: Reelit – Personal TikTok-Style Vertical Video & Reels Feed for Reddit  
-> **Status**: Fully functional on Windows (Vite + Chrome MV3 Extension Bridge). Ready for Android PWA / further feature development.  
+> **Status**: Fully functional on Windows (Vite + Chrome MV3 Extension Bridge) and as an Android PWA. [`CURRENT_BUGS.md`](CURRENT_BUGS.md) has no open items.  
 > **Last Updated**: October 2026
 
 ---
@@ -53,16 +53,17 @@ Reelit runs as a local web application backed by an unpacked Manifest V3 Chrome 
 * **Challenge**: Reddit splits hosted video (`v.redd.it`) into separate video-only MP4 files and audio-only MP4 DASH files. Direct `<video src="fallback_url">` has no sound.
 * **Solution**: 
   - Reddit's `HLSPlaylist.m3u8` is parsed by `hls.js`, muxing synchronized audio and video in a single `<video>` element.
-  - **On-Demand HLS Lifecycle**: Instead of creating 50 concurrent Hls instances on page load (which exceeds Chromium's hardware limit of 16 `MediaSource` decoders), HLS is instantiated **only for the active visible reel**. Distant reels (>2 away) destroy their HLS instances to keep hardware decoders free.
-  - Audio backup: If direct MP4 fallback is used, a synced hidden `<audio>` element plays DASH tracks (`DASH_AUDIO_128.mp4`).
+  - **On-Demand HLS Lifecycle**: `hls.js` is imported only when a Reddit video needs it. A player is created for the active reel. A generation token (`_hlsGen`) drops a load that finishes after the viewer has swiped away, so two players cannot attach to the same element. Reels more than one slot away are unmounted and their HLS instances destroyed.
+  - **Fatal fallback**: if HLS itself fails, playback uses `item.videoUrl` (the Reddit `fallback_url`). It does not rewrite the URL to an unverified `DASH_480`.
+  - Audio backup: the sidecar `<audio>` (`DASH_AUDIO_128.mp4` and friends) plays only when HLS is not attached. While `_hls` is set, that element stays paused so the muxed HLS audio is not doubled.
 
 ### B. Redgifs ISP Blocking & Zero-Freeze Resiliency
 * **Challenge**: User ISP blocks `*.redgifs.com`. When requests hang, sequential loops froze the entire feed, resulting in black screens after the first video. In addition, browser VPN extensions bypass `localhost`.
 * **Solution**:
   - **Immediate Mount**: `site/feed.js` appends all posts to the DOM immediately.
-  - **Instant Reddit CDN Cache Fallback**: When Reddit ingests Redgifs, it caches an MP4 transcode in `post.preview.reddit_video_preview.fallback_url` on `v.redd.it` (never blocked by ISPs). The player uses this immediately with zero black screens.
-  - **Non-blocking Background Resolution**: Resolution runs asynchronously. If Redgifs resolves (e.g. desktop VPN active), `updateReelMedia()` upgrades the video to uncompressed Redgifs HD with audio. If it fails or times out (3.5s limit), it seamlessly continues playing the Reddit cache.
-  - **Concurrent Probing**: Strategy 4 in `background.js` probes top CDN candidates in parallel with `Promise.any` rather than sequential timeouts.
+  - **Reddit CDN cache is the timeout fallback, not the first download**: Redgifs posts mount with a poster and no `videoUrl`. The player does not start Reddit's cached MP4 while the API call is in flight. If the resolve exceeds 6.5s and a cache exists, that silent preview plays immediately. The same in-flight promise can still upgrade the reel to the Redgifs file when it returns. One attempt per post: swiping away and back does not start a second resolve.
+  - **SD for playback, HD kept for download**: the API result prefers `urls.sd` (the `-mobile.mp4`). `urls.hd` is stored on `hdUrl` and used when the viewer downloads. The on-screen badge still reads "Redgifs HD" for a direct Redgifs file.
+  - **CDN fallback order**: if the API fails, mobile hosts are probed first. HD hosts are probed only after every mobile candidate fails. `thumbs2.redgifs.com` is not a candidate. HTML page scrapes still run only when Reddit has no cached preview.
 
 ### C. Origin & Referrer Policy (HTTP 403 Forbidden)
 * **Challenge**: Reddit's CDN (`v.redd.it`, `i.redd.it`, `preview.redd.it`) inspects the HTTP `Referer` header. Requests from `http://localhost:5173/` were rejected with HTTP 403 Forbidden.
@@ -83,14 +84,14 @@ Reelit runs as a local web application backed by an unpacked Manifest V3 Chrome 
 
 | File | Path | Description |
 | :--- | :--- | :--- |
-| **`manifest.json`** | `extension/manifest.json` | Manifest V3 configuration, permissions (`cookies`, `downloads`), host permissions (`reddit.com`, `redd.it`, `redgifs.com`), content script injection into `localhost`. Current version: `v1.3.0`. |
+| **`manifest.json`** | `extension/manifest.json` | Manifest V3 configuration, permissions (`cookies`, `downloads`), host permissions (`reddit.com`, `redd.it`, `redgifs.com`), content script injection into `localhost` and GitHub Pages. Current version: `v1.7.0`. `reelit-extension.zip` is this folder packed for install. |
 | **`background.js`** | `extension/background.js` | Service worker handling Reddit `.json` fetches with session cookies, automatic `old.reddit` <-> `www.reddit` fallback, and 4-strategy Redgifs resolution with strict timeouts. |
 | **`content.js`** | `extension/content.js` | Injected into the web page. Bridges `window.postMessage` from the frontend to `chrome.runtime.sendMessage` in the background worker. Emits `EXTENSION_READY` on load. |
 | **`index.html`** | `site/index.html` | Application shell: Top navigation bar, feed controls (subreddit & sort selector), status badge pill, audio toast, debug drawer, and `<meta name="referrer" content="no-referrer">`. |
 | **`main.js`** | `site/main.js` | Web app entrypoint: wires UI controls, handles bridge connection state, triggers feed loads, and logs diagnostics. |
 | **`bridge.js`** | `site/bridge.js` | Client-side Promise-based wrapper around `window.postMessage`. Correlates request IDs with timeout safety. |
 | **`reddit.js`** | `site/reddit.js` | Reddit URL builder (`buildRedditUrl`), session checker (`checkRedditSession`), feed fetcher (`fetchFeed`), and media classification (`classifyPost`). |
-| **`feed.js`** | `site/feed.js` | Core reel controller: `IntersectionObserver` scroll snapping, on-demand HLS player, gesture controls (single tap pause, double tap like), keyboard navigation (`J`/`K`/`↑`/`↓`/`Space`/`M`), multi-image gallery carousel, and diagnostic badge management. |
+| **`feed.js`** | `site/feed.js` | Core reel controller: `IntersectionObserver` scroll snapping, on-demand HLS player, gallery playback (`syncGallery`), Redgifs priority resolve, keyboard navigation (`J`/`K`/`↑`/`↓`/`Space`/`M`), and diagnostic badge management. |
 | **`styles.css`** | `site/styles.css` | TikTok/Reels CSS: `100dvh` full-screen snapping, ambient blurred backdrop, action buttons column, diagnostic pill badges, and dark mode theme. |
 | **`vite.config.js`** | `site/vite.config.js` | Vite config set to port `5173` with `host: true` enabled for LAN access. |
 
@@ -107,7 +108,7 @@ Reelit runs as a local web application backed by an unpacked Manifest V3 Chrome 
 2. Toggle **Developer mode** ON (top-right).
 3. Click **Load unpacked** (top-left).
 4. Select the folder: `c:\Users\rh22\Desktop\pls\reelit3\extension`.
-5. Verify the extension **Reddit Reels Bridge** (v1.3.0) is enabled.
+5. Verify the extension **Reddit Reels Bridge** (v1.7.0) is enabled. Phone installs can use `reelit-extension.zip` from the repo root.
 6. Ensure you are logged into Reddit in this browser profile.
 
 ### Step 2: Start the Development Server
@@ -118,7 +119,7 @@ npm run dev
 
 ### Step 3: Open the Web App
 * Navigate to `http://localhost:5173/`.
-* The status indicator in the top right will turn green (`v1.3.0 • Logged In`).
+* The status indicator in the top right will turn green (`v1.7.0 • Logged In`).
 * Your personal feed will begin streaming immediately with dynamic feed rotation.
 
 ---
@@ -212,8 +213,6 @@ npm run dev
       - When opening the search view with an empty input, recent searches are displayed immediately with a "Clear" button and quick 1-click selection.
       - Action emits toast confirmation and dynamically updates localStorage.
 
----
-
 14. **Standalone Android PWA & GitHub Pages Hosting (v1.9.0)**:
     - **PWA Packaging via `vite-plugin-pwa`**:
       - Configured standalone PWA manifest with `display: "standalone"`, `orientation: "portrait"`, and solid black theme (`theme_color: "#000000"`, `background_color: "#000000"`).
@@ -228,6 +227,27 @@ npm run dev
     - **Automated GitHub Pages Deployment**:
       - Added `.github/workflows/deploy.yml` for automated GitHub Actions build and deployment on push to `main`.
 
+15. **Playback data use and scroll cost (October 2026)**:
+    - **Redgifs quality**: playback requests `urls.sd`. `urls.hd` is kept for the download action. Resolution is limited to the visible reel and the next one, with a 6.5s race and a late upgrade from that same promise.
+    - **Reddit video**: shorter HLS buffer, `capLevelToPlayerSize`, and no preload of the large DASH MP4 on the reel ahead. Sidecar DASH audio stays off while HLS is playing.
+    - **Images**: `pickOptimalImageUrl` picks a preview near screen width instead of `preview.images[0].source`. Galleries prefer `meta.s.mp4` over the GIF, render that MP4 as `<video>`, and load slides through `data-src` only when the reel is on screen.
+    - **Feed weight**: first page asks for 15 posts, later pages 25. Joined-subreddit writes are batched once per fetch. `hls.js` is a dynamic import. Debug lines stay in a 60-entry ring buffer and touch the DOM only while the log panel is open.
+    - **Refresh**: `loadInitialFeed` calls `unmountVideo` on every mounted reel before clearing the container.
+    - **Follow-ups closed**: gallery pause, unmute-while-paused, the missing `hls.js` fallback (Safari uses the playlist natively; other browsers use the MP4 plus sidecar audio), lowercased Imgur URLs, the CDN probe body, and gallery `window` listeners.
+
+16. **Seek bar and feed switch (October 2026)**:
+    - The scrubber paints from `timeupdate`, `durationchange`, and `seeked`. A non-finite duration does not force the fill back to 0. Touch end and touch cancel on `window` clear a drag the feed scroller interrupted.
+    - The active reel shows the knob, the timestamp, and the thicker track without a hover.
+    - `loadInitialFeed` bumps a generation id, drops observer entries, and ignores a page that belongs to the previous subreddit, sort, or refresh.
+    - A blocked unmuted autoplay sets the app mute flag. Retry reloads the feed when the bridge is already up.
+    - The Redgifs CDN probe accepts a video or `octet-stream` type, or a non-HTML `206`. A `200` HTML block page with a `.mp4` URL is not a video.
+    - [`CURRENT_BUGS.md`](CURRENT_BUGS.md) has no open items. Far reel nodes stay mounted until a long session actually gets the phone killed.
+
+17. **Extension v1.7.0 (October 2026)**:
+    - `extension/manifest.json` is `1.7.0`. The content script reports that version from the manifest.
+    - `reelit-extension.zip` was rebuilt from `manifest.json`, `background.js`, and `content.js`.
+    - The packed background worker includes the Redgifs probe change: a `200` HTML block page is not treated as video.
+
 ---
 
 ## 6. Next Steps / Future Roadmap
@@ -236,3 +256,5 @@ npm run dev
    - Slide-up bottom sheet showing top-level Reddit comments and discussion trees without leaving the app.
 2. **Media Filter Toggle**:
    - Toggle in header to switch between "All Posts", "Videos Only", or "Text Only".
+3. **Open bug list**:
+   - Nothing is open in [`CURRENT_BUGS.md`](CURRENT_BUGS.md).

@@ -1556,8 +1556,10 @@ html, body {
   padding: 0 0 2px 0;
   transition: height 0.15s ease;
   user-select: none;
+  touch-action: none;
 }
 
+.feed-item.is-current .video-scrubber-container,
 .video-scrubber-container:hover,
 .video-scrubber-container.scrubbing {
   height: 30px;
@@ -1571,6 +1573,7 @@ html, body {
   transition: height 0.15s ease;
 }
 
+.feed-item.is-current .video-scrubber-track,
 .video-scrubber-container:hover .video-scrubber-track,
 .video-scrubber-container.scrubbing .video-scrubber-track {
   height: 6px;
@@ -1614,6 +1617,7 @@ html, body {
   pointer-events: none;
 }
 
+.feed-item.is-current .video-scrubber-thumb,
 .video-scrubber-container:hover .video-scrubber-thumb,
 .video-scrubber-container.scrubbing .video-scrubber-thumb {
   transform: translate(-50%, -50%) scale(1);
@@ -1637,6 +1641,7 @@ html, body {
   letter-spacing: 0.2px;
 }
 
+.feed-item.is-current .video-time-bubble,
 .video-scrubber-container:hover .video-time-bubble,
 .video-scrubber-container.scrubbing .video-time-bubble {
   opacity: 1;

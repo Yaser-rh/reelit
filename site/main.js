@@ -1164,6 +1164,16 @@ bridge.onStatusChange((status, details) => {
 retryBtn?.addEventListener("click", () => {
   hideError();
   loadingScreen.style.display = "flex";
+  if (bridge.isReady()) {
+    loadingText.textContent = "Loading reels from Reddit...";
+    feedController.loadInitialFeed({
+      user: currentAuthor,
+      subreddit: currentAuthor ? "" : currentSubreddit,
+      sort: currentSort,
+      timeFilter: currentTime
+    });
+    return;
+  }
   loadingText.textContent = "Re-checking extension bridge...";
   bridge.startHandshake();
 });
