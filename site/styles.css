@@ -866,6 +866,7 @@ html, body {
   overflow-y: scroll;
   scroll-snap-type: y mandatory;
   overscroll-behavior-y: contain;
+  touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -882,7 +883,7 @@ html, body {
   height: 100%;
   height: 100dvh;
   scroll-snap-align: start;
-  scroll-snap-stop: normal; /* Allows smooth flings past multiple reels */
+  scroll-snap-stop: always;
   position: relative;
   overflow: hidden;
   display: flex;
@@ -962,6 +963,8 @@ html, body {
   display: flex;
   overflow-x: scroll;
   scroll-snap-type: x mandatory;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
   scrollbar-width: none;
   cursor: grab;
 }
@@ -979,6 +982,7 @@ html, body {
   width: 100%;
   height: 100%;
   scroll-snap-align: center;
+  scroll-snap-stop: always;
   display: flex;
   align-items: center;
   justify-content: center;

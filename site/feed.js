@@ -88,8 +88,17 @@ export class FeedController {
     this.sort = "best";
     this.timeFilter = "day";
 
+    this._touching = false;
+    this._touch = null;
+    this._pendingIndex = -1;
+    this._feedScrolling = false;
+    this._paging = false;
+    this._scrollEndTimer = null;
+    this._suppressClick = false;
+
     this.setupIntersectionObserver();
     this.setupKeyboardNavigation();
+    this.setupFeedMotion();
   }
 
   setupIntersectionObserver() {
@@ -100,7 +109,12 @@ export class FeedController {
           if (isNaN(index)) return;
 
           if (entry.isIntersecting && entry.intersectionRatio >= 0.6) {
-            this.handleItemVisible(index, entry.target);
+            // A swipe commits from scrollend. This path only resumes the
+            // reel that is already current after a visibility dip.
+            if (this._feedScrolling || this._touching) return;
+            if (this.currentIndex === index) {
+              this.handleItemVisible(index, entry.target);
+            }
           } else if (!entry.isIntersecting || entry.intersectionRatio < 0.2) {
             this.handleItemHidden(index, entry.target);
           }
@@ -125,19 +139,9 @@ export class FeedController {
         e.preventDefault();
         this.scrollToPrev();
       } else if (e.code === "ArrowRight" || e.code === "KeyL") {
-        const currentEl = this.renderedElements.get(this.currentIndex);
-        const gallery = currentEl?.querySelector(".gallery-container");
-        if (gallery) {
-          e.preventDefault();
-          gallery.scrollBy({ left: gallery.clientWidth, behavior: "smooth" });
-        }
+        if (this.stepGallery(1)) e.preventDefault();
       } else if (e.code === "ArrowLeft" || e.code === "KeyH") {
-        const currentEl = this.renderedElements.get(this.currentIndex);
-        const gallery = currentEl?.querySelector(".gallery-container");
-        if (gallery) {
-          e.preventDefault();
-          gallery.scrollBy({ left: -gallery.clientWidth, behavior: "smooth" });
-        }
+        if (this.stepGallery(-1)) e.preventDefault();
       } else if (e.code === "Space") {
         e.preventDefault();
         this.toggleCurrentPlayback();
@@ -155,21 +159,248 @@ export class FeedController {
   }
 
   scrollToNext() {
-    if (this.currentIndex < this.items.length - 1) {
-      const nextEl = this.renderedElements.get(this.currentIndex + 1);
-      if (nextEl) {
-        nextEl.scrollIntoView({ behavior: "smooth" });
-      }
-    }
+    const base = this.indexFromScroll();
+    this.scrollFeedToIndex((base < 0 ? this.currentIndex : base) + 1);
   }
 
   scrollToPrev() {
-    if (this.currentIndex > 0) {
-      const prevEl = this.renderedElements.get(this.currentIndex - 1);
-      if (prevEl) {
-        prevEl.scrollIntoView({ behavior: "smooth" });
-      }
+    const base = this.indexFromScroll();
+    this.scrollFeedToIndex((base < 0 ? this.currentIndex : base) - 1);
+  }
+
+  indexFromScroll() {
+    const height = this.container.clientHeight || 1;
+    const index = Math.round(this.container.scrollTop / height);
+    if (this.items.length === 0) return -1;
+    return Math.max(0, Math.min(this.items.length - 1, index));
+  }
+
+  // overflow:hidden drops an Android fling that would otherwise keep coasting
+  // after the finger lifts. The stylesheet value returns when the lock clears.
+  cancelScrollAnim(el) {
+    if (!el) return;
+    el._scrollGen = (el._scrollGen || 0) + 1;
+    if (el._scrollAnim) {
+      cancelAnimationFrame(el._scrollAnim);
+      el._scrollAnim = 0;
     }
+    clearTimeout(el._pinTimer);
+    el.style.scrollSnapType = "";
+    if (el.style.overflow === "hidden") el.style.overflow = "";
+  }
+
+  killMomentum(el) {
+    if (!el) return;
+    this.cancelScrollAnim(el);
+    const top = el.scrollTop;
+    const left = el.scrollLeft;
+    el.style.overflow = "hidden";
+    el.scrollTop = top;
+    el.scrollLeft = left;
+  }
+
+  animateTo(el, { top = null, left = null, duration = 200, onDone = null } = {}) {
+    if (!el) return;
+    el._scrollGen = (el._scrollGen || 0) + 1;
+    const gen = el._scrollGen;
+    if (el._scrollAnim) cancelAnimationFrame(el._scrollAnim);
+    const startTop = el.scrollTop;
+    const startLeft = el.scrollLeft;
+    const toTop = top == null ? startTop : top;
+    const toLeft = left == null ? startLeft : left;
+    const deltaTop = toTop - startTop;
+    const deltaLeft = toLeft - startLeft;
+    const finish = () => {
+      if (el._scrollGen !== gen) return;
+      el._scrollAnim = 0;
+      if (top != null) el.scrollTop = toTop;
+      if (left != null) el.scrollLeft = toLeft;
+      el.style.scrollSnapType = "";
+      if (el.style.overflow === "hidden") el.style.overflow = "";
+      if (top != null) el.scrollTop = toTop;
+      if (left != null) el.scrollLeft = toLeft;
+      clearTimeout(el._pinTimer);
+      el._pinTimer = setTimeout(() => {
+        if (el._scrollGen !== gen || el._scrollAnim) return;
+        if (top != null) el.scrollTop = toTop;
+        if (left != null) el.scrollLeft = toLeft;
+      }, 80);
+      if (onDone) onDone();
+    };
+    if (Math.abs(deltaTop) < 1 && Math.abs(deltaLeft) < 1) {
+      finish();
+      return;
+    }
+    el.style.scrollSnapType = "none";
+    const started = performance.now();
+    const step = (now) => {
+      if (el._scrollGen !== gen) return;
+      const progress = Math.min(1, (now - started) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      if (top != null) el.scrollTop = startTop + deltaTop * eased;
+      if (left != null) el.scrollLeft = startLeft + deltaLeft * eased;
+      if (progress < 1) {
+        el._scrollAnim = requestAnimationFrame(step);
+        return;
+      }
+      finish();
+    };
+    el._scrollAnim = requestAnimationFrame(step);
+  }
+
+  scrollFeedToIndex(index, duration = 200) {
+    if (index < 0 || index >= this.items.length) return;
+    const el = this.renderedElements.get(index);
+    if (!el) return;
+    this._paging = true;
+    this.killMomentum(this.container);
+    this.animateTo(this.container, {
+      top: el.offsetTop,
+      duration,
+      onDone: () => {
+        this._paging = false;
+        this.finishFeedScroll();
+      }
+    });
+  }
+
+  stepGallery(direction) {
+    const currentEl = this.renderedElements.get(this.currentIndex);
+    const gallery = currentEl?.querySelector(".gallery-container");
+    if (!gallery) return false;
+    const width = gallery.clientWidth || 1;
+    const slides = gallery.querySelectorAll(".gallery-slide").length;
+    if (!slides) return false;
+    const index = Math.round(gallery.scrollLeft / width);
+    const target = Math.max(0, Math.min(slides - 1, index + direction));
+    this.killMomentum(gallery);
+    this.animateTo(gallery, {
+      left: target * width,
+      duration: 200,
+      onDone: () => gallery._onScrollSettled?.()
+    });
+    return true;
+  }
+
+  notePendingReel() {
+    const index = this.indexFromScroll();
+    if (index < 0 || index === this._pendingIndex) return;
+    this._pendingIndex = index;
+    if (this.currentIndex >= 0 && this.currentIndex !== index) {
+      const prev = this.renderedElements.get(this.currentIndex);
+      if (prev) this.pauseMedia(prev, { cancelLoad: true });
+    }
+  }
+
+  scheduleFeedSettle() {
+    clearTimeout(this._scrollEndTimer);
+    this._scrollEndTimer = setTimeout(() => this.finishFeedScroll(), 160);
+  }
+
+  finishFeedScroll() {
+    if (this._touching || this._settling || this._paging) return;
+    if (this.container._scrollAnim) {
+      this.scheduleFeedSettle();
+      return;
+    }
+    const index = this.indexFromScroll();
+    const el = this.renderedElements.get(index);
+    if (!el || index < 0) {
+      this._feedScrolling = false;
+      return;
+    }
+    this._settling = true;
+    this._pendingIndex = index;
+    try {
+      this.handleItemVisible(index, el);
+    } finally {
+      this._settling = false;
+      this._feedScrolling = false;
+    }
+  }
+
+  touchShouldIgnore(target) {
+    if (!target || typeof target.closest !== "function") return false;
+    return Boolean(target.closest(
+      "button, a, input, textarea, select, .video-scrubber-container, .text-post-card, .gallery-dot"
+    ));
+  }
+
+  setupFeedMotion() {
+    const feed = this.container;
+
+    feed.addEventListener("scroll", () => {
+      this._feedScrolling = true;
+      this.notePendingReel();
+      if (this._touching) return;
+      this.scheduleFeedSettle();
+    }, { passive: true });
+
+    feed.addEventListener("scrollend", () => {
+      if (this._touching) return;
+      clearTimeout(this._scrollEndTimer);
+      this.finishFeedScroll();
+    });
+
+    feed.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      clearTimeout(feed._pinTimer);
+      this._touching = true;
+      this._paging = false;
+      this.cancelScrollAnim(feed);
+      this._touch = {
+        x: t.clientX,
+        y: t.clientY,
+        time: performance.now(),
+        index: Math.max(0, this.indexFromScroll()),
+        ignore: this.touchShouldIgnore(e.target)
+      };
+      clearTimeout(this._scrollEndTimer);
+    }, { passive: true });
+
+    feed.addEventListener("touchend", (e) => {
+      const start = this._touch;
+      this._touching = false;
+      this._touch = null;
+      if (!start || start.ignore || e.changedTouches.length !== 1) {
+        this.scheduleFeedSettle();
+        return;
+      }
+      const t = e.changedTouches[0];
+      const dx = t.clientX - start.x;
+      const dy = t.clientY - start.y;
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      // A tap stays a tap. Play/pause is the click that follows.
+      // Settle anyway so a swipe animation the finger interrupted still commits.
+      if (absX < 12 && absY < 12) {
+        this.scheduleFeedSettle();
+        return;
+      }
+      if (absX > absY) {
+        this.scheduleFeedSettle();
+        return;
+      }
+
+      const page = feed.clientHeight || 1;
+      const elapsed = performance.now() - start.time;
+      const flick = elapsed < 280 && absY > 28;
+      const travel = absY > page * 0.18;
+      const dir = (flick || travel) ? (dy < 0 ? 1 : -1) : 0;
+      const target = Math.max(0, Math.min(this.items.length - 1, start.index + dir));
+      this._suppressClick = true;
+      setTimeout(() => {
+        this._suppressClick = false;
+      }, 450);
+      this.scrollFeedToIndex(target, dir === 0 ? 120 : 200);
+    }, { passive: true });
+
+    feed.addEventListener("touchcancel", () => {
+      this._touching = false;
+      this._touch = null;
+      this.scheduleFeedSettle();
+    }, { passive: true });
   }
 
   handleItemVisible(index, element) {
@@ -802,6 +1033,20 @@ export class FeedController {
     this.items = [];
     this.container.innerHTML = "";
     this.currentIndex = -1;
+    this._pendingIndex = -1;
+    this._feedScrolling = false;
+    this._touching = false;
+    this._touch = null;
+    this._paging = false;
+    clearTimeout(this._scrollEndTimer);
+    this.container._scrollGen = (this.container._scrollGen || 0) + 1;
+    if (this.container._scrollAnim) {
+      cancelAnimationFrame(this.container._scrollAnim);
+      this.container._scrollAnim = 0;
+    }
+    clearTimeout(this.container._pinTimer);
+    this.container.style.scrollSnapType = "";
+    this.container.style.overflow = "";
     this.hasMore = true;
     // The previous page may still be in flight. Release the lock so this
     // generation can fetch. That older call keeps its own generation and
@@ -1196,6 +1441,7 @@ export class FeedController {
     // If this is the very first reel appended, play it!
     if (index === 0) {
       setTimeout(() => {
+        if (this.currentIndex > 0 || this.indexFromScroll() > 0) return;
         this.handleItemVisible(0, el);
       }, 100);
     }
@@ -1214,6 +1460,10 @@ export class FeedController {
 
     // Single click on media toggles Play/Pause
     wrapper?.addEventListener("click", (e) => {
+      if (this._suppressClick) {
+        this._suppressClick = false;
+        return;
+      }
       // Don't trigger if clicked on gallery scroll or buttons
       if (e.target.closest(".gallery-dots") || e.target.closest(".gallery-nav-btn")) return;
       if (el._galleryDragged) {
@@ -1379,8 +1629,8 @@ export class FeedController {
       const totalSlides = item.images.length;
       let currentSlide = 0;
 
-      const updateGalleryState = (index) => {
-        currentSlide = Math.max(0, Math.min(index, totalSlides - 1));
+      const paintGalleryChrome = (slideIndex) => {
+        currentSlide = Math.max(0, Math.min(slideIndex, totalSlides - 1));
         if (counter) {
           counter.textContent = `${currentSlide + 1} / ${totalSlides}`;
         }
@@ -1393,36 +1643,117 @@ export class FeedController {
         if (nextBtn) {
           nextBtn.classList.toggle("hidden", currentSlide === totalSlides - 1);
         }
+      };
 
+      const commitGallery = () => {
+        const width = galleryContainer.clientWidth || 1;
+        const slideIndex = Math.round(galleryContainer.scrollLeft / width);
+        paintGalleryChrome(slideIndex);
         this.syncGallery(el, !galleryContainer._userPaused);
+      };
+      galleryContainer._onScrollSettled = commitGallery;
+
+      let galleryTouching = false;
+      let galleryTouch = null;
+      let galleryTimer = null;
+
+      const scheduleGalleryCommit = () => {
+        clearTimeout(galleryTimer);
+        galleryTimer = setTimeout(commitGallery, 160);
       };
 
       galleryContainer.addEventListener("scroll", () => {
         const width = galleryContainer.clientWidth || 1;
-        const index = Math.round(galleryContainer.scrollLeft / width);
-        updateGalleryState(index);
+        const slideIndex = Math.round(galleryContainer.scrollLeft / width);
+        paintGalleryChrome(slideIndex);
+        if (isDown || galleryTouching || galleryContainer._scrollAnim) return;
+        scheduleGalleryCommit();
+      }, { passive: true });
+
+      galleryContainer.addEventListener("scrollend", () => {
+        if (galleryTouching || galleryContainer._scrollAnim) return;
+        clearTimeout(galleryTimer);
+        commitGallery();
       });
+
+      const goToSlide = (slideIndex, duration = 200) => {
+        const width = galleryContainer.clientWidth || 1;
+        const target = Math.max(0, Math.min(totalSlides - 1, slideIndex));
+        this.killMomentum(galleryContainer);
+        this.animateTo(galleryContainer, {
+          left: target * width,
+          duration,
+          onDone: commitGallery
+        });
+      };
+
+      galleryContainer.addEventListener("touchstart", (e) => {
+        if (e.touches.length !== 1) return;
+        if (e.target.closest(".gallery-nav-btn, .gallery-dot")) return;
+        const t = e.touches[0];
+        clearTimeout(galleryContainer._pinTimer);
+        this.cancelScrollAnim(galleryContainer);
+        galleryTouching = true;
+        galleryTouch = {
+          x: t.clientX,
+          y: t.clientY,
+          time: performance.now(),
+          index: Math.round(galleryContainer.scrollLeft / (galleryContainer.clientWidth || 1))
+        };
+        clearTimeout(galleryTimer);
+      }, { passive: true });
+
+      galleryContainer.addEventListener("touchend", (e) => {
+        const start = galleryTouch;
+        galleryTouching = false;
+        galleryTouch = null;
+        if (!start || e.changedTouches.length !== 1) {
+          scheduleGalleryCommit();
+          return;
+        }
+        const t = e.changedTouches[0];
+        const dx = t.clientX - start.x;
+        const dy = t.clientY - start.y;
+        const absX = Math.abs(dx);
+        const absY = Math.abs(dy);
+        if (absX < 12 && absY < 12) {
+          scheduleGalleryCommit();
+          return;
+        }
+        if (absY >= absX) {
+          scheduleGalleryCommit();
+          return;
+        }
+        const width = galleryContainer.clientWidth || 1;
+        const elapsed = performance.now() - start.time;
+        const flick = elapsed < 280 && absX > 28;
+        const travel = absX > width * 0.18;
+        const dir = (flick || travel) ? (dx < 0 ? 1 : -1) : 0;
+        el._galleryDragged = true;
+        goToSlide(start.index + dir, dir === 0 ? 120 : 200);
+      }, { passive: true });
+
+      galleryContainer.addEventListener("touchcancel", () => {
+        galleryTouching = false;
+        galleryTouch = null;
+        scheduleGalleryCommit();
+      }, { passive: true });
 
       prevBtn?.addEventListener("click", (e) => {
         e.stopPropagation();
-        const width = galleryContainer.clientWidth;
-        galleryContainer.scrollBy({ left: -width, behavior: "smooth" });
+        goToSlide(currentSlide - 1);
       });
 
       nextBtn?.addEventListener("click", (e) => {
         e.stopPropagation();
-        const width = galleryContainer.clientWidth;
-        galleryContainer.scrollBy({ left: width, behavior: "smooth" });
+        goToSlide(currentSlide + 1);
       });
 
       dots.forEach((dot) => {
         dot.addEventListener("click", (e) => {
           e.stopPropagation();
           const slideIdx = parseInt(dot.dataset.slide, 10);
-          if (!isNaN(slideIdx)) {
-            const width = galleryContainer.clientWidth;
-            galleryContainer.scrollTo({ left: slideIdx * width, behavior: "smooth" });
-          }
+          if (!isNaN(slideIdx)) goToSlide(slideIdx);
         });
       });
 
@@ -1436,6 +1767,7 @@ export class FeedController {
       const endDrag = () => {
         if (dragged) el._galleryDragged = true;
         isDown = false;
+        if (dragged) commitGallery();
       };
 
       galleryContainer.addEventListener("pointerdown", (e) => {
