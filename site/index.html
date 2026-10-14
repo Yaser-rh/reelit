@@ -18,118 +18,101 @@
     <div id="app">
       <!-- Top Navigation Header -->
       <header class="top-nav">
-        <!-- Left: Sort selector & Timeframe -->
-        <div class="nav-left">
-          <div class="custom-dropdown" id="sort-dropdown">
-            <button class="nav-pill dropdown-trigger" id="sort-dropdown-btn" type="button">
-              <span class="dropdown-selected-text" id="sort-selected-text">Best</span>
-              <svg class="dropdown-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-            </button>
-            <div class="dropdown-menu" id="sort-dropdown-menu">
-              <div class="dropdown-item active" data-value="best">Best</div>
-              <div class="dropdown-item" data-value="hot">Hot</div>
-              <div class="dropdown-item" data-value="top">Top</div>
-              <div class="dropdown-item" data-value="new">New</div>
-              <div class="dropdown-item" data-value="rising">Rising</div>
-            </div>
-          </div>
+        <button type="button" id="feed-sort-btn" class="feed-sort-pill" aria-expanded="false" aria-controls="feed-sort-menu" title="Feed and sort">
+          <span class="pill-lines">
+            <span id="pill-feed">Home</span>
+            <span id="pill-sort">Best</span>
+          </span>
+          <svg class="pill-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>
+        </button>
+        <div id="media-source-badge" class="media-source-badge"></div>
+        <button type="button" id="brand-logo-btn" class="brand-logo" title="App Status & Account">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2C6.48 2 2 6.48 2 12c0 5.52 4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
+          </svg>
+          <span class="logo-status-dot" id="logo-status-dot"></span>
+        </button>
+      </header>
 
-          <div class="custom-dropdown" id="time-dropdown" style="display: none;">
-            <button class="nav-pill dropdown-trigger" id="time-dropdown-btn" type="button">
-              <span class="dropdown-selected-text" id="time-selected-text">Today</span>
-              <svg class="dropdown-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-            </button>
-            <div class="dropdown-menu" id="time-dropdown-menu">
-              <div class="dropdown-item active" data-value="day">Today (24h)</div>
-              <div class="dropdown-item" data-value="week">This Week</div>
-              <div class="dropdown-item" data-value="month">This Month</div>
-              <div class="dropdown-item" data-value="year">This Year</div>
-              <div class="dropdown-item" data-value="all">All Time</div>
+      <div id="feed-sort-menu" class="feed-sort-menu" hidden>
+        <div id="menu-feed-panel">
+          <div class="menu-section-label">Feed</div>
+          <button type="button" class="menu-row active" data-feed="">
+            <svg class="menu-row-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+            <span>Home</span>
+          </button>
+          <button type="button" class="menu-row" data-feed="popular">
+            <svg class="menu-row-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+            <span>r/Popular</span>
+          </button>
+          <button type="button" class="menu-row" data-feed="all">
+            <svg class="menu-row-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-1 17.93A8.001 8.001 0 0 1 4.07 13H11v6.93zm2 0V13h6.93A8.001 8.001 0 0 1 13 19.93zM4.07 11A8.001 8.001 0 0 1 11 4.07V11H4.07zM13 4.07A8.001 8.001 0 0 1 19.93 11H13V4.07z"/></svg>
+            <span>r/All</span>
+          </button>
+          <button type="button" class="menu-row" id="sub-header-join-btn" hidden title="Join community">
+            <span id="sub-header-join-text">+ Join</span>
+          </button>
+
+          <div class="menu-search-box">
+            <svg class="search-box-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+            <input type="text" id="sub-search-input" placeholder="Search subreddits" autocomplete="off" spellcheck="false" />
+            <button class="search-clear-btn" id="sub-search-clear-btn" type="button" hidden title="Clear">&times;</button>
+          </div>
+          <div class="search-hint" id="sub-search-hint" hidden>Type a name to search Reddit communities</div>
+          <div class="search-results-list" id="sub-search-results"></div>
+
+          <div class="feed-recent-section" id="feed-recent-section" hidden>
+            <div class="feed-recent-header">
+              <span class="menu-section-label">Recent</span>
+              <button class="feed-recent-clear-btn" id="feed-recent-clear-btn" type="button" title="Clear all recent searches">Clear</button>
             </div>
+            <div class="feed-recent-items" id="feed-recent-items"></div>
           </div>
         </div>
 
-        <!-- Center: Subreddit Selector or Creator Banner -->
-        <div class="nav-center">
-          <!-- Creator Profile indicator banner -->
-          <div class="creator-nav-banner" id="creator-banner" style="display: none;">
-            <button class="creator-back-btn" id="creator-back-btn" title="Back to Feed" type="button">
-              <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-              <span>Back</span>
-            </button>
-            <span class="creator-name" id="creator-banner-name">u/author</span>
-            <button class="creator-follow-btn" id="creator-follow-btn" type="button" title="Follow creator on Reddit">
-              <span id="creator-follow-text">+ Follow</span>
-            </button>
-          </div>
-
-          <!-- Feed / Subreddit selector (Middle) -->
-          <div class="custom-dropdown" id="feed-dropdown">
-            <button class="nav-pill dropdown-trigger" id="feed-dropdown-btn" type="button">
-              <span class="dropdown-selected-text" id="feed-selected-text">Home (Your Feed)</span>
-              <svg class="dropdown-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-            </button>
-            <div class="dropdown-menu feed-dropdown-menu" id="feed-dropdown-menu">
-              <!-- Mode 1: Main Feed Menu -->
-              <div class="feed-menu-main" id="feed-menu-main">
-                <div class="dropdown-item active" data-action="home" data-value="">
-                  <svg class="dropdown-item-icon" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
-                  <span>Home (Your Feed)</span>
-                </div>
-                <div class="dropdown-item" data-action="search" id="feed-open-search-btn">
-                  <svg class="dropdown-item-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                  <span>Search Subreddits...</span>
-                </div>
-                <!-- Dynamic: Recent Subreddits section -->
-                <div class="feed-recent-section" id="feed-recent-section" style="display: none;">
-                  <div class="dropdown-divider"></div>
-                  <div class="feed-recent-header">
-                    <span class="dropdown-section-label">Recent</span>
-                    <button class="feed-recent-clear-btn" id="feed-recent-clear-btn" type="button" title="Clear all recent searches">Clear</button>
-                  </div>
-                  <div class="feed-recent-items" id="feed-recent-items"></div>
-                </div>
-              </div>
-
-              <!-- Mode 2: Search View with Input & Live Suggestions -->
-              <div class="feed-menu-search" id="feed-menu-search" style="display: none;">
-                <div class="search-input-header">
-                  <button class="search-back-btn" id="sub-search-back-btn" type="button" title="Back to menu">
-                    <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-                  </button>
-                  <div class="search-input-box">
-                    <svg class="search-box-icon" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-                    <input type="text" id="sub-search-input" placeholder="Type subreddit (e.g. fun)..." autocomplete="off" spellcheck="false" />
-                    <button class="search-clear-btn" id="sub-search-clear-btn" type="button" style="display: none;" title="Clear">&times;</button>
-                  </div>
-                </div>
-
-                <div class="search-suggestions-container" id="sub-suggestions-container">
-                  <div class="search-hint" id="sub-search-hint">Type a name to search Reddit communities</div>
-                  <div class="search-results-list" id="sub-search-results"></div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Subreddit Header Join Button (Visible only when inside a subreddit) -->
-          <button class="sub-header-join-btn" id="sub-header-join-btn" type="button" style="display: none;" title="Join community">
-            <span id="sub-header-join-text">+ Join</span>
+        <div id="menu-creator-panel" hidden>
+          <div class="menu-section-label">Creator</div>
+          <div class="creator-menu-name" id="creator-banner-name">u/author</div>
+          <button type="button" class="menu-row" id="creator-back-btn" title="Back to Feed">Back</button>
+          <button type="button" class="menu-row" id="creator-follow-btn" title="Follow creator on Reddit">
+            <span id="creator-follow-text">+ Follow</span>
           </button>
         </div>
 
-        <!-- Right: Reelit Logo with Status Indicator -->
-        <div class="nav-right">
-          <div class="brand-logo-wrapper" id="brand-logo-wrapper">
-            <button class="brand-logo" id="brand-logo-btn" type="button" title="App Status & Account">
-              <svg viewBox="0 0 24 24">
-                <path d="M12 2C6.48 2 2 6.48 2 12c0 5.52 4.48 10 10 10s10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9l6 4.5-6 4.5z"/>
-              </svg>
-              <span class="logo-status-dot" id="logo-status-dot"></span>
-            </button>
-          </div>
+        <div class="menu-divider"></div>
+        <div class="menu-section-label">Sort</div>
+        <button type="button" class="menu-row sort-row active" data-value="best">Best</button>
+        <button type="button" class="menu-row sort-row" data-value="hot">Hot</button>
+        <button type="button" class="menu-row sort-row" data-value="top">Top</button>
+        <button type="button" class="menu-row sort-row" data-value="new">New</button>
+        <button type="button" class="menu-row sort-row" data-value="rising">Rising</button>
+        <div id="time-options" hidden>
+          <button type="button" class="time-chip" data-value="hour">Past hour</button>
+          <button type="button" class="time-chip active" data-value="day">Today</button>
+          <button type="button" class="time-chip" data-value="week">This week</button>
+          <button type="button" class="time-chip" data-value="month">This month</button>
+          <button type="button" class="time-chip" data-value="year">This year</button>
+          <button type="button" class="time-chip" data-value="all">All time</button>
         </div>
-      </header>
+      </div>
+
+      <div id="more-sheet" class="more-sheet" hidden>
+        <div class="sheet-drag-handle"></div>
+        <div class="sheet-title-row">
+          <span>Post Actions</span>
+          <button type="button" id="more-sheet-close">Close</button>
+        </div>
+        <button type="button" class="sheet-action-row" id="more-comments-btn">
+          <span class="sheet-action-label">Comments</span>
+          <span class="sheet-action-meta" id="more-comments-count"></span>
+        </button>
+        <button type="button" class="sheet-action-row" id="more-refresh-btn">
+          <span class="sheet-action-label">Refresh</span>
+        </button>
+        <button type="button" class="sheet-action-row" id="more-status-btn">
+          <span class="sheet-action-label">Reelit Status & Account</span>
+        </button>
+      </div>
 
       <!-- Status & Account Popover Modal -->
       <div class="status-popover" id="status-popover" style="display: none;">

@@ -23,6 +23,10 @@ Thumbs.db
 desktop.ini
 *.tmp
 
+# Local UI mock, screenshots, and transition notes
+ui/
+UI_TRANSITION.md
+
 # Editor directories
 .vscode/
 .idea/

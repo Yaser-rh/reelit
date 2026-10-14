@@ -51,6 +51,20 @@ function getStoredSeenIds() {
   return new Set();
 }
 
+function scrubberMarkup() {
+  return `
+    <div class="video-time-row">
+      <span class="video-time-current">0:00</span>
+      <span class="video-time-duration">0:00</span>
+    </div>
+    <div class="video-scrubber-track">
+      <div class="video-scrubber-buffered"></div>
+      <div class="video-scrubber-fill"></div>
+      <div class="video-scrubber-thumb"></div>
+    </div>
+  `;
+}
+
 function saveStoredSeenIds(seenSet) {
   try {
     const arr = Array.from(seenSet);
@@ -408,6 +422,8 @@ export class FeedController {
     // Resume it unless the viewer explicitly tapped pause.
     if (this.currentIndex === index) {
       element.classList.add("is-current");
+      const sameItem = this.items[index];
+      if (sameItem) this.updateItemBadge(element, sameItem);
       const gallery = element.querySelector(".gallery-container");
       if (gallery) {
         if (gallery._userPaused) return;
@@ -440,6 +456,7 @@ export class FeedController {
       }
     }
     element.classList.add("is-current");
+    if (currentItem) this.updateItemBadge(element, currentItem);
 
     const activeVideo = element.querySelector(".gallery-container")
       ? null
@@ -898,50 +915,35 @@ export class FeedController {
     }
   }
 
-  getDiagnosticBadgeHtml(item) {
-    if (item.isText || item.mediaType === "text") {
-      return `<div class="diag-pill source-text">📝 Text</div>`;
-    }
+  getDiagnosticBadgeHtml(item, element) {
+    if (!item) return "";
+    if (item.isText || item.mediaType === "text") return "Text";
     if (item.isGallery) {
-      return `<div class="diag-pill source-reddit">🖼️ Gallery (${item.images?.length || 0})</div>`;
+      const slide = element?.dataset.gallerySlide || "1";
+      const total = element?.dataset.galleryTotal || String(item.images?.length || 0);
+      return `Gallery ${slide}/${total}`;
     }
-    if (item.mediaType === "image") {
-      return `<div class="diag-pill source-reddit">🖼️ Image</div>`;
-    }
+    if (item.mediaType === "image") return "Image";
 
-    let sourcePrefix = "🔴 Reddit";
-    let pillClass = "source-reddit";
+    let sourcePrefix = "Video";
+    if (item.sourceType === "redgifs_direct") sourcePrefix = "Redgifs HD";
+    else if (item.sourceType === "reddit_cache" || item.isIspFallback) sourcePrefix = "Cache";
+    else if (item.sourceType === "redgifs_iframe") sourcePrefix = "Redgifs";
+    else if (item.sourceType === "redgifs_pending") sourcePrefix = "Resolving";
 
-    if (item.sourceType === "redgifs_direct") {
-      sourcePrefix = "🎬 Redgifs HD";
-      pillClass = "source-redgifs";
-    } else if (item.sourceType === "reddit_cache" || item.isIspFallback) {
-      sourcePrefix = "🛡️ Cache";
-      pillClass = "source-isp-cache";
-    } else if (item.sourceType === "redgifs_iframe") {
-      sourcePrefix = "📺 Redgifs";
-      pillClass = "source-redgifs";
-    } else if (item.sourceType === "redgifs_pending") {
-      sourcePrefix = "⏳ Resolving";
-      pillClass = "source-redgifs";
-    }
+    let audioSuffix = " · Muted";
+    if (item.isGif || item.hasAudio === false) audioSuffix = " · Silent";
+    else if (!this.isMuted) audioSuffix = " · Sound";
 
-    let audioSuffix = "• 🔇";
-    if (item.isGif || item.hasAudio === false) {
-      audioSuffix = "• 🔇";
-    } else if (!this.isMuted) {
-      audioSuffix = "• 🔊";
-    }
-
-    return `<div class="diag-pill ${pillClass}">${sourcePrefix} ${audioSuffix}</div>`;
+    return `${sourcePrefix}${audioSuffix}`;
   }
 
   updateItemBadge(element, item) {
-    if (!element) return;
-    const badge = element.querySelector(".reel-debug-badge");
-    if (badge) {
-      badge.innerHTML = this.getDiagnosticBadgeHtml(item);
-    }
+    if (!element || !item) return;
+    if (this.renderedElements.get(this.currentIndex) !== element) return;
+    const badge = document.getElementById("media-source-badge");
+    if (!badge) return;
+    badge.textContent = this.getDiagnosticBadgeHtml(item, element);
   }
 
   updateReelMedia(element, item) {
@@ -953,7 +955,6 @@ export class FeedController {
     const actionColumn = element.querySelector(".action-column");
     let soundBtn = element.querySelector(".sound-btn");
     if (!soundBtn && actionColumn && (item.videoUrl || item.cachedVideoUrl)) {
-      const statusBtn = element.querySelector(".bridge-status-btn");
       soundBtn = document.createElement("button");
       soundBtn.className = "action-btn sound-btn";
       soundBtn.title = "Toggle Sound";
@@ -967,11 +968,8 @@ export class FeedController {
         e.stopPropagation();
         this.toggleMute(element);
       });
-      if (statusBtn) {
-        actionColumn.insertBefore(soundBtn, statusBtn);
-      } else {
-        actionColumn.appendChild(soundBtn);
-      }
+      actionColumn.insertBefore(soundBtn, actionColumn.firstChild);
+      element.classList.add("has-scrubber");
     } else if (soundBtn) {
       const soundLabel = soundBtn.querySelector(".action-label");
       if (soundLabel) {
@@ -1032,6 +1030,8 @@ export class FeedController {
     this.renderedElements.clear();
     this.items = [];
     this.container.innerHTML = "";
+    const headerBadge = document.getElementById("media-source-badge");
+    if (headerBadge) headerBadge.textContent = "";
     this.currentIndex = -1;
     this._pendingIndex = -1;
     this._feedScrolling = false;
@@ -1261,8 +1261,10 @@ export class FeedController {
     const isSubredditMode = Boolean(this.subreddit);
     const isSubJoined = isTargetJoined(item.subreddit, "sub");
 
+    const hasVideo = Boolean(item.videoUrl || item.hlsUrl || item.cachedVideoUrl || item.needsResolution);
+
     const el = document.createElement("div");
-    el.className = "feed-item";
+    el.className = hasVideo ? "feed-item has-scrubber" : "feed-item";
     el.dataset.index = index;
 
     // Ambient background. Gallery backdrops use the still poster, never the GIF file.
@@ -1283,7 +1285,7 @@ export class FeedController {
       mediaHtml = `
         <iframe class="media-element redgifs-iframe" src="${item.embedUrl}" allow="autoplay; fullscreen" loading="lazy"></iframe>
       `;
-    } else if (item.videoUrl || item.hlsUrl || item.cachedVideoUrl || item.needsResolution) {
+    } else if (hasVideo) {
       const audioSources = (item.audioCandidates || [])
         .map((src) => `<source src="${src}" type="audio/mp4" />`)
         .join("");
@@ -1311,7 +1313,7 @@ export class FeedController {
             }).join("")}
           </div>
           ${item.images.length > 1 ? `
-            <div class="gallery-counter">1 / ${item.images.length}</div>
+            <div class="gallery-counter" hidden>1 / ${item.images.length}</div>
             <button class="gallery-nav-btn prev hidden" title="Previous Image" aria-label="Previous">
               <svg viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
             </button>
@@ -1360,31 +1362,14 @@ export class FeedController {
 
     el.innerHTML = `
       ${backdropHtml}
-      <div class="reel-debug-badge">
-        ${this.getDiagnosticBadgeHtml(item)}
-      </div>
       <div class="media-wrapper ${item.isText ? "text-wrapper" : ""}">
         ${mediaHtml}
       </div>
 
-      <!-- Action Buttons Column -->
+      <!-- Action Buttons Column: Sound, Save, More -->
       <div class="action-column">
-        <button class="action-btn save-btn ${item.saved ? "saved" : ""}" title="Save Reel">
-          <div class="action-icon-circle">
-            <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
-          </div>
-          <span class="action-label">${item.saved ? "Saved" : "Save"}</span>
-        </button>
-
-        <a class="action-btn comments-btn" href="${item.permalink}" target="_blank" title="Reddit Comments">
-          <div class="action-icon-circle">
-            <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H6v-2h12v2zm0-3H6V9h12v2zm0-3H6V6h12v2z"/></svg>
-          </div>
-          <span class="action-label">${item.commentsFormatted}</span>
-        </a>
-
-        ${item.videoUrl || item.hlsUrl || item.cachedVideoUrl || item.needsResolution ? `
-          <button class="action-btn sound-btn" title="Toggle Sound">
+        ${hasVideo ? `
+          <button class="action-btn sound-btn" title="Toggle Sound" type="button">
             <div class="action-icon-circle">
               ${this.getSoundIconSvg()}
             </div>
@@ -1392,11 +1377,18 @@ export class FeedController {
           </button>
         ` : ""}
 
-        <button class="action-btn refresh-feed-btn" title="Refresh Feed (Get New Posts)">
-          <div class="action-icon-circle refresh-icon-circle">
-            <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+        <button class="action-btn save-btn ${item.saved ? "saved" : ""}" title="Save Reel" type="button">
+          <div class="action-icon-circle">
+            <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
           </div>
-          <span class="action-label">Refresh</span>
+          <span class="action-label">${item.saved ? "Saved" : "Save"}</span>
+        </button>
+
+        <button class="action-btn more-btn" title="More" type="button">
+          <div class="action-icon-circle">
+            <svg viewBox="0 0 24 24"><path d="M6 10a2 2 0 1 0 .001 4.001A2 2 0 0 0 6 10zm6 0a2 2 0 1 0 .001 4.001A2 2 0 0 0 12 10zm6 0a2 2 0 1 0 .001 4.001A2 2 0 0 0 18 10z"/></svg>
+          </div>
+          <span class="action-label">More</span>
         </button>
       </div>
 
@@ -1421,14 +1413,9 @@ export class FeedController {
       ` : ""}
 
       <!-- Interactive Video Scrubber -->
-      ${item.videoUrl || item.hlsUrl || item.cachedVideoUrl || item.needsResolution ? `
+      ${hasVideo ? `
         <div class="video-scrubber-container">
-          <div class="video-scrubber-track">
-            <div class="video-scrubber-buffered"></div>
-            <div class="video-scrubber-fill"></div>
-            <div class="video-scrubber-thumb"></div>
-          </div>
-          <div class="video-time-bubble">0:00 / 0:00</div>
+          ${scrubberMarkup()}
         </div>
       ` : ""}
     `;
@@ -1491,17 +1478,10 @@ export class FeedController {
       });
     });
 
-    // Refresh feed button
-    const refreshBtn = el.querySelector(".refresh-feed-btn");
-    refreshBtn?.addEventListener("click", (e) => {
+    const moreBtn = el.querySelector(".more-btn");
+    moreBtn?.addEventListener("click", (e) => {
       e.stopPropagation();
-      const svg = refreshBtn.querySelector("svg");
-      if (svg) {
-        svg.classList.remove("spin-anim");
-        void svg.offsetWidth;
-        svg.classList.add("spin-anim");
-      }
-      this.onStatusUpdate({ refreshFeed: true });
+      this.onStatusUpdate({ openMore: item });
     });
 
     // Wire video scrubber if this reel has one main video. Gallery slides manage themselves.
@@ -1631,9 +1611,12 @@ export class FeedController {
 
       const paintGalleryChrome = (slideIndex) => {
         currentSlide = Math.max(0, Math.min(slideIndex, totalSlides - 1));
+        el.dataset.gallerySlide = String(currentSlide + 1);
+        el.dataset.galleryTotal = String(totalSlides);
         if (counter) {
           counter.textContent = `${currentSlide + 1} / ${totalSlides}`;
         }
+        this.updateItemBadge(el, item);
         dots.forEach((dot, i) => {
           dot.classList.toggle("active", i === currentSlide);
         });
@@ -1810,22 +1793,17 @@ export class FeedController {
     if (!scrubberContainer) {
       scrubberContainer = document.createElement("div");
       scrubberContainer.className = "video-scrubber-container";
-      scrubberContainer.innerHTML = `
-        <div class="video-scrubber-track">
-          <div class="video-scrubber-buffered"></div>
-          <div class="video-scrubber-fill"></div>
-          <div class="video-scrubber-thumb"></div>
-        </div>
-        <div class="video-time-bubble">0:00 / 0:00</div>
-      `;
+      scrubberContainer.innerHTML = scrubberMarkup();
       el.appendChild(scrubberContainer);
+      el.classList.add("has-scrubber");
     }
 
     const scrubberTrack = scrubberContainer.querySelector(".video-scrubber-track");
     const scrubberFill = scrubberContainer.querySelector(".video-scrubber-fill");
     const scrubberBuffered = scrubberContainer.querySelector(".video-scrubber-buffered");
     const scrubberThumb = scrubberContainer.querySelector(".video-scrubber-thumb");
-    const timeBubble = scrubberContainer.querySelector(".video-time-bubble");
+    const timeCurrent = scrubberContainer.querySelector(".video-time-current");
+    const timeDuration = scrubberContainer.querySelector(".video-time-duration");
 
     if (!scrubberTrack || scrubberTrack._wired) return;
     scrubberTrack._wired = true;
@@ -1849,9 +1827,8 @@ export class FeedController {
       const clamped = Math.max(0, Math.min(1, ratio));
       if (scrubberFill) scrubberFill.style.transform = `scaleX(${clamped})`;
       if (scrubberThumb) scrubberThumb.style.left = `${clamped * 100}%`;
-      if (timeBubble) {
-        timeBubble.textContent = `${formatTime(clamped * duration)} / ${formatTime(duration)}`;
-      }
+      if (timeCurrent) timeCurrent.textContent = formatTime(clamped * duration);
+      if (timeDuration) timeDuration.textContent = formatTime(duration);
     };
 
     const updateProgress = () => {

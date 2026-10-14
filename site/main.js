@@ -20,29 +20,16 @@ const errorTitle = document.getElementById("error-title");
 const errorDescription = document.getElementById("error-description");
 const retryBtn = document.getElementById("retry-btn");
 
-// Navigation & Custom Dropdowns
-const sortDropdown = document.getElementById("sort-dropdown");
-const sortDropdownBtn = document.getElementById("sort-dropdown-btn");
-const sortSelectedText = document.getElementById("sort-selected-text");
-const sortDropdownMenu = document.getElementById("sort-dropdown-menu");
-
-const timeDropdown = document.getElementById("time-dropdown");
-const timeDropdownBtn = document.getElementById("time-dropdown-btn");
-const timeSelectedText = document.getElementById("time-selected-text");
-const timeDropdownMenu = document.getElementById("time-dropdown-menu");
-
-const feedDropdown = document.getElementById("feed-dropdown");
-const feedDropdownBtn = document.getElementById("feed-dropdown-btn");
-const feedSelectedText = document.getElementById("feed-selected-text");
-const feedDropdownMenu = document.getElementById("feed-dropdown-menu");
+// Feed + sort pill and the one menu
+const feedSortBtn = document.getElementById("feed-sort-btn");
+const feedSortMenu = document.getElementById("feed-sort-menu");
+const pillFeed = document.getElementById("pill-feed");
+const pillSort = document.getElementById("pill-sort");
+const menuFeedPanel = document.getElementById("menu-feed-panel");
+const timeOptions = document.getElementById("time-options");
 const subHeaderJoinBtn = document.getElementById("sub-header-join-btn");
 const subHeaderJoinText = document.getElementById("sub-header-join-text");
 
-// Subreddit Search & Menu Elements
-const feedMenuMain = document.getElementById("feed-menu-main");
-const feedMenuSearch = document.getElementById("feed-menu-search");
-const feedOpenSearchBtn = document.getElementById("feed-open-search-btn");
-const subSearchBackBtn = document.getElementById("sub-search-back-btn");
 const subSearchInput = document.getElementById("sub-search-input");
 const subSearchClearBtn = document.getElementById("sub-search-clear-btn");
 const subSearchHint = document.getElementById("sub-search-hint");
@@ -51,14 +38,20 @@ const feedRecentSection = document.getElementById("feed-recent-section");
 const feedRecentItems = document.getElementById("feed-recent-items");
 const feedRecentClearBtn = document.getElementById("feed-recent-clear-btn");
 
-const creatorBanner = document.getElementById("creator-banner");
+const menuCreatorPanel = document.getElementById("menu-creator-panel");
 const creatorBannerName = document.getElementById("creator-banner-name");
 const creatorBackBtn = document.getElementById("creator-back-btn");
 const creatorFollowBtn = document.getElementById("creator-follow-btn");
 const creatorFollowText = document.getElementById("creator-follow-text");
 
+const moreSheet = document.getElementById("more-sheet");
+const moreSheetClose = document.getElementById("more-sheet-close");
+const moreCommentsBtn = document.getElementById("more-comments-btn");
+const moreCommentsCount = document.getElementById("more-comments-count");
+const moreRefreshBtn = document.getElementById("more-refresh-btn");
+const moreStatusBtn = document.getElementById("more-status-btn");
+
 // Reelit Logo & Status Popover Elements
-const brandLogoWrapper = document.getElementById("brand-logo-wrapper");
 const brandLogoBtn = document.getElementById("brand-logo-btn");
 const logoStatusDot = document.getElementById("logo-status-dot");
 
@@ -86,6 +79,24 @@ let currentTime = "day";
 let currentAuthor = "";
 let previousFeed = { subreddit: "", sort: "best", time: "day" };
 let currentSessionInfo = null;
+let moreItem = null;
+
+const SORT_LABELS = {
+  best: "Best",
+  hot: "Hot",
+  new: "New",
+  top: "Top",
+  rising: "Rising"
+};
+
+const TIME_LABELS = {
+  hour: "Past hour",
+  day: "Today",
+  week: "This week",
+  month: "This month",
+  year: "This year",
+  all: "All time"
+};
 
 // Debug logging helper (in-memory ring buffer to eliminate DOM writes & reflows while panel is closed)
 const MAX_DEBUG_LOGS = 60;
@@ -195,6 +206,10 @@ const feedController = new FeedController({
 
     if (state.toggleJoin) {
       handleToggleJoin(state.toggleJoin.target, state.toggleJoin.type);
+    }
+
+    if (state.openMore) {
+      openMoreSheet(state.openMore);
     }
   },
   onDebugLog: (msg) => logDebug(msg)
@@ -379,13 +394,13 @@ function updateCreatorFollowButtonState(author, joined) {
 function updateSubHeaderJoinButtonState(subreddit, joined) {
   if (!subHeaderJoinBtn || !subHeaderJoinText) return;
   if (!currentSubreddit || currentAuthor) {
-    subHeaderJoinBtn.style.display = "none";
+    subHeaderJoinBtn.hidden = true;
     return;
   }
   const cleanCurrent = currentSubreddit.trim().toLowerCase().replace(/^r\//, "");
   const cleanTarget = (subreddit || "").trim().toLowerCase().replace(/^r\//, "");
   if (cleanCurrent === cleanTarget) {
-    subHeaderJoinBtn.style.display = "inline-flex";
+    subHeaderJoinBtn.hidden = false;
     subHeaderJoinBtn.classList.toggle("joined", joined);
     subHeaderJoinText.textContent = joined ? "Joined ✓" : "+ Join";
     subHeaderJoinBtn.title = joined ? "Leave community" : "Join community";
@@ -399,26 +414,66 @@ subHeaderJoinBtn?.addEventListener("click", (e) => {
   }
 });
 
-// Dropdown Management
-const allDropdowns = [sortDropdown, timeDropdown, feedDropdown].filter(Boolean);
+function closeFeedSortMenu() {
+  if (!feedSortMenu) return;
+  feedSortMenu.hidden = true;
+  feedSortBtn?.classList.remove("open");
+  feedSortBtn?.setAttribute("aria-expanded", "false");
+}
+
+function openFeedSortMenu() {
+  if (!feedSortMenu) return;
+  closeStatusPopover();
+  closeMoreSheet();
+  feedSortMenu.hidden = false;
+  feedSortBtn?.classList.add("open");
+  feedSortBtn?.setAttribute("aria-expanded", "true");
+}
+
+function toggleFeedSortMenu() {
+  if (feedSortMenu && !feedSortMenu.hidden) closeFeedSortMenu();
+  else openFeedSortMenu();
+}
 
 function closeAllDropdowns() {
-  allDropdowns.forEach((dd) => dd.classList.remove("open"));
+  closeFeedSortMenu();
 }
 
 function closeStatusPopover() {
   if (statusPopover) statusPopover.style.display = "none";
 }
 
-function toggleStatusPopover() {
+function openStatusPopover() {
   if (!statusPopover) return;
   closeAllDropdowns();
+  closeMoreSheet();
+  updatePopoverStats();
+  statusPopover.style.display = "flex";
+}
+
+function toggleStatusPopover() {
+  if (!statusPopover) return;
   if (statusPopover.style.display === "none" || !statusPopover.style.display) {
-    updatePopoverStats();
-    statusPopover.style.display = "flex";
+    openStatusPopover();
   } else {
     statusPopover.style.display = "none";
   }
+}
+
+function openMoreSheet(item) {
+  if (!item || !moreSheet) return;
+  moreItem = item;
+  closeFeedSortMenu();
+  closeStatusPopover();
+  if (moreCommentsCount) {
+    moreCommentsCount.textContent = item.commentsFormatted || "0";
+  }
+  moreSheet.hidden = false;
+}
+
+function closeMoreSheet() {
+  if (moreSheet) moreSheet.hidden = true;
+  moreItem = null;
 }
 
 function toggleDebugPanel() {
@@ -435,85 +490,39 @@ function closeDebugPanel() {
   debugPanel.classList.remove("open");
 }
 
-// Global click-outside listener
+// Outside click closes the menu, the status popover, and the More sheet.
+// No backdrop inside #feed: a layer there would eat swipes.
 document.addEventListener("click", (e) => {
-  if (!e.target.closest(".custom-dropdown")) {
-    closeAllDropdowns();
+  if (!e.target.closest("#feed-sort-menu") && !e.target.closest("#feed-sort-btn")) {
+    closeFeedSortMenu();
   }
-  if (!e.target.closest("#status-popover") && !e.target.closest("#brand-logo-wrapper")) {
+  if (
+    !e.target.closest("#status-popover") &&
+    !e.target.closest("#brand-logo-btn") &&
+    !e.target.closest("#more-status-btn")
+  ) {
     closeStatusPopover();
+  }
+  if (!e.target.closest("#more-sheet") && !e.target.closest(".more-btn")) {
+    closeMoreSheet();
   }
 });
 
-// ESC key closes popover or debug panel
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     closeStatusPopover();
     closeDebugPanel();
     closeAllDropdowns();
+    closeMoreSheet();
   }
 });
 
-function toggleDropdown(dropdownEl) {
-  if (!dropdownEl) return;
-  const isOpen = dropdownEl.classList.contains("open");
-  closeAllDropdowns();
-  closeStatusPopover();
-  if (!isOpen) {
-    dropdownEl.classList.add("open");
-  }
-}
-
-sortDropdownBtn?.addEventListener("click", (e) => {
+feedSortBtn?.addEventListener("click", (e) => {
   e.stopPropagation();
-  toggleDropdown(sortDropdown);
+  toggleFeedSortMenu();
 });
 
-timeDropdownBtn?.addEventListener("click", (e) => {
-  e.stopPropagation();
-  toggleDropdown(timeDropdown);
-});
-
-// Feed dropdown button: Resets search mode and opens main menu
-feedDropdownBtn?.addEventListener("click", (e) => {
-  e.stopPropagation();
-  closeSubredditSearch();
-  toggleDropdown(feedDropdown);
-});
-
-// Sort Dropdown Selection Handler
-sortDropdownMenu?.addEventListener("click", (e) => {
-  const item = e.target.closest(".dropdown-item");
-  if (!item) return;
-
-  const newSort = item.dataset.value;
-  if (!newSort) return;
-
-  // Update active styling
-  sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => el.classList.remove("active"));
-  item.classList.add("active");
-  if (sortSelectedText) sortSelectedText.textContent = item.textContent.trim();
-
-  closeAllDropdowns();
-
-  if (newSort === "top") {
-    // Top sort reveals and opens timeframe dropdown so user chooses time range first
-    currentSort = "top";
-    if (timeDropdown) {
-      timeDropdown.style.display = "inline-flex";
-      setTimeout(() => {
-        timeDropdown.classList.add("open");
-      }, 50);
-    }
-    return;
-  }
-
-  // Any other sort hides timeframe dropdown and triggers immediate feed reload
-  if (timeDropdown) {
-    timeDropdown.style.display = "none";
-  }
-  currentSort = newSort;
-
+function loadFeedNow() {
   hideError();
   feedController.loadInitialFeed({
     user: currentAuthor,
@@ -521,31 +530,43 @@ sortDropdownMenu?.addEventListener("click", (e) => {
     sort: currentSort,
     timeFilter: currentTime
   });
-});
+}
 
-// Timeframe Dropdown Selection Handler
-timeDropdownMenu?.addEventListener("click", (e) => {
-  const item = e.target.closest(".dropdown-item");
-  if (!item) return;
-
-  const newTime = item.dataset.value;
-  if (!newTime) return;
-
-  timeDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => el.classList.remove("active"));
-  item.classList.add("active");
-  if (timeSelectedText) timeSelectedText.textContent = item.textContent.trim();
-
-  currentTime = newTime;
+function chooseSort(newSort) {
+  if (!newSort) return;
+  if (newSort === "top") {
+    setSortSelection("top");
+    return;
+  }
+  setSortSelection(newSort);
   closeAllDropdowns();
+  loadFeedNow();
+}
 
-  hideError();
-  // Triggers Top sort feed load with chosen timeframe
-  feedController.loadInitialFeed({
-    user: currentAuthor,
-    subreddit: currentAuthor ? "" : currentSubreddit,
-    sort: "top",
-    timeFilter: currentTime
-  });
+function chooseTime(newTime) {
+  if (!newTime) return;
+  markTimeSelection(newTime);
+  currentSort = "top";
+  setSortSelection("top");
+  closeAllDropdowns();
+  loadFeedNow();
+}
+
+feedSortMenu?.addEventListener("click", (e) => {
+  const sortRow = e.target.closest(".sort-row");
+  if (sortRow && feedSortMenu.contains(sortRow)) {
+    chooseSort(sortRow.dataset.value);
+    return;
+  }
+  const timeChip = e.target.closest(".time-chip");
+  if (timeChip && feedSortMenu.contains(timeChip)) {
+    chooseTime(timeChip.dataset.value);
+    return;
+  }
+  const feedRow = e.target.closest("[data-feed]");
+  if (feedRow && feedSortMenu.contains(feedRow)) {
+    selectSubreddit(feedRow.dataset.feed || "");
+  }
 });
 
 // Recent Subreddits Storage
@@ -598,15 +619,15 @@ function renderRecentSubreddits() {
   if (!feedRecentSection || !feedRecentItems) return;
   const list = loadRecentSubreddits();
   if (list.length === 0) {
-    feedRecentSection.style.display = "none";
+    feedRecentSection.hidden = true;
     feedRecentItems.innerHTML = "";
     return;
   }
-  feedRecentSection.style.display = "block";
+  feedRecentSection.hidden = false;
   feedRecentItems.innerHTML = "";
   list.forEach((subName) => {
     const item = document.createElement("div");
-    item.className = `dropdown-item recent-sub-item ${currentSubreddit.toLowerCase() === subName.toLowerCase() ? "active" : ""}`;
+    item.className = `menu-row recent-sub-item ${currentSubreddit.toLowerCase() === subName.toLowerCase() ? "active" : ""}`;
     item.dataset.value = subName;
     item.innerHTML = `
       <div class="recent-sub-left">
@@ -635,89 +656,22 @@ feedRecentClearBtn?.addEventListener("click", (e) => {
 
 // Render recent searches view inside search mode dropdown
 function renderSearchRecentView() {
-  if (!subSearchResults) return;
-  const list = loadRecentSubreddits();
-  if (list.length === 0) {
-    if (subSearchHint) {
-      subSearchHint.textContent = "Type a name to search Reddit communities";
-      subSearchHint.style.display = "block";
-    }
-    subSearchResults.innerHTML = "";
-    return;
-  }
-
-  if (subSearchHint) {
-    subSearchHint.style.display = "none";
-  }
-
-  subSearchResults.innerHTML = `
-    <div class="search-recent-header">
-      <span class="search-recent-title">Recent Searches</span>
-      <button class="search-recent-clear-btn" id="search-recent-clear-btn" type="button" title="Clear all recent searches">Clear</button>
-    </div>
-  `;
-
-  const clearBtn = subSearchResults.querySelector("#search-recent-clear-btn");
-  clearBtn?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    clearRecentSubreddits();
-  });
-
-  list.forEach((subName) => {
-    const item = document.createElement("div");
-    item.className = `search-result-item recent-sub-item ${currentSubreddit.toLowerCase() === subName.toLowerCase() ? "active" : ""}`;
-    item.innerHTML = `
-      <div class="recent-sub-left">
-        <div class="search-result-icon" style="width: 22px; height: 22px; font-size: 0.62rem;">r/</div>
-        <div class="search-result-text">
-          <div class="search-result-name">r/${subName}</div>
-        </div>
-      </div>
-      <button class="recent-remove-btn" type="button" title="Remove r/${subName}">&times;</button>
-    `;
-    item.addEventListener("click", (e) => {
-      if (e.target.closest(".recent-remove-btn")) return;
-      selectSubreddit(subName);
-    });
-    const removeBtn = item.querySelector(".recent-remove-btn");
-    removeBtn?.addEventListener("click", (e) => {
-      e.stopPropagation();
-      removeRecentSubreddit(subName);
-    });
-    subSearchResults.appendChild(item);
-  });
+  if (subSearchHint) subSearchHint.hidden = true;
+  if (subSearchResults) subSearchResults.innerHTML = "";
+  renderRecentSubreddits();
 }
 
 // Subreddit Search UI Handlers
 let searchDebounceTimer = null;
 let currentSearchQuery = "";
 
-function openSubredditSearch() {
-  if (feedMenuMain) feedMenuMain.style.display = "none";
-  if (feedMenuSearch) feedMenuSearch.style.display = "flex";
-  if (subSearchInput) {
-    subSearchInput.value = "";
-    if (subSearchClearBtn) subSearchClearBtn.style.display = "none";
-    renderSearchRecentView();
-    setTimeout(() => subSearchInput.focus(), 60);
-  }
-}
-
 function closeSubredditSearch() {
-  if (feedMenuSearch) feedMenuSearch.style.display = "none";
-  if (feedMenuMain) feedMenuMain.style.display = "block";
+  if (subSearchInput) subSearchInput.value = "";
+  if (subSearchClearBtn) subSearchClearBtn.hidden = true;
+  if (subSearchHint) subSearchHint.hidden = true;
+  if (subSearchResults) subSearchResults.innerHTML = "";
   renderRecentSubreddits();
 }
-
-feedOpenSearchBtn?.addEventListener("click", (e) => {
-  e.stopPropagation();
-  openSubredditSearch();
-});
-
-subSearchBackBtn?.addEventListener("click", (e) => {
-  e.stopPropagation();
-  closeSubredditSearch();
-});
 
 subSearchClearBtn?.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -725,7 +679,7 @@ subSearchClearBtn?.addEventListener("click", (e) => {
     subSearchInput.value = "";
     subSearchInput.focus();
   }
-  if (subSearchClearBtn) subSearchClearBtn.style.display = "none";
+  if (subSearchClearBtn) subSearchClearBtn.hidden = true;
   renderSearchRecentView();
 });
 
@@ -734,7 +688,7 @@ subSearchInput?.addEventListener("input", (e) => {
   currentSearchQuery = query;
 
   if (subSearchClearBtn) {
-    subSearchClearBtn.style.display = query ? "block" : "none";
+    subSearchClearBtn.hidden = !query;
   }
 
   clearTimeout(searchDebounceTimer);
@@ -746,7 +700,7 @@ subSearchInput?.addEventListener("input", (e) => {
 
   if (subSearchHint) {
     subSearchHint.textContent = `Searching communities for "${query}"... ⏳`;
-    subSearchHint.style.display = "block";
+    subSearchHint.hidden = false;
   }
 
   searchDebounceTimer = setTimeout(async () => {
@@ -757,13 +711,13 @@ subSearchInput?.addEventListener("input", (e) => {
       if (results.length === 0) {
         if (subSearchHint) {
           subSearchHint.textContent = `No communities found matching "r/${query}". Press Enter to visit anyway.`;
-          subSearchHint.style.display = "block";
+          subSearchHint.hidden = false;
         }
         if (subSearchResults) subSearchResults.innerHTML = "";
         return;
       }
 
-      if (subSearchHint) subSearchHint.style.display = "none";
+      if (subSearchHint) subSearchHint.hidden = true;
       if (subSearchResults) {
         subSearchResults.innerHTML = "";
         results.forEach((sub) => {
@@ -794,7 +748,7 @@ subSearchInput?.addEventListener("input", (e) => {
       console.warn("Search error:", err);
       if (subSearchHint) {
         subSearchHint.textContent = `Search failed: ${err.message}`;
-        subSearchHint.style.display = "block";
+        subSearchHint.hidden = false;
       }
     }
   }, 220);
@@ -818,10 +772,22 @@ subSearchInput?.addEventListener("keydown", (e) => {
   }
 });
 
-// Home option handler in main feed menu
-feedMenuMain?.querySelector('[data-action="home"]')?.addEventListener("click", () => {
-  selectSubreddit("");
-});
+function markFeedShortcuts() {
+  const name = (currentSubreddit || "").trim().toLowerCase();
+  menuFeedPanel?.querySelectorAll("[data-feed]").forEach((el) => {
+    el.classList.toggle("active", (el.dataset.feed || "").toLowerCase() === name);
+  });
+}
+
+function showFeedMenuPanel() {
+  if (menuCreatorPanel) menuCreatorPanel.hidden = true;
+  if (menuFeedPanel) menuFeedPanel.hidden = false;
+}
+
+function showCreatorMenuPanel() {
+  if (menuFeedPanel) menuFeedPanel.hidden = true;
+  if (menuCreatorPanel) menuCreatorPanel.hidden = false;
+}
 
 function selectSubreddit(subName) {
   closeAllDropdowns();
@@ -830,20 +796,10 @@ function selectSubreddit(subName) {
   currentSubreddit = clean;
   currentAuthor = "";
 
-  if (creatorBanner) creatorBanner.style.display = "none";
-  if (feedDropdown) feedDropdown.style.display = "inline-flex";
+  showFeedMenuPanel();
+  markFeedShortcuts();
 
-  // Update selection UI in feed dropdown
-  const homeItem = feedMenuMain?.querySelector('[data-action="home"]');
-  if (homeItem) {
-    homeItem.classList.toggle("active", !clean);
-  }
-
-  if (feedSelectedText) {
-    feedSelectedText.textContent = clean ? `r/${clean}` : "Home (Your Feed)";
-  }
-
-  // Update subreddit join button in header
+  // Update subreddit join button in the menu
   if (clean) {
     const isJoined = isTargetJoined(clean, "sub");
     updateSubHeaderJoinButtonState(clean, isJoined);
@@ -870,6 +826,27 @@ function selectSubreddit(subName) {
   });
 }
 
+function allowedSorts() {
+  if (currentAuthor) return ["new", "hot", "top"];
+  if (currentSubreddit) return ["hot", "top", "new", "rising"];
+  return ["best", "new"];
+}
+
+function paintPill() {
+  if (pillFeed) {
+    if (currentAuthor) pillFeed.textContent = `u/${currentAuthor}`;
+    else if (currentSubreddit) pillFeed.textContent = `r/${currentSubreddit}`;
+    else pillFeed.textContent = "Home";
+  }
+  if (pillSort) {
+    if (currentSort === "top") {
+      pillSort.textContent = `Top · ${TIME_LABELS[currentTime] || "Today"}`;
+    } else {
+      pillSort.textContent = SORT_LABELS[currentSort] || currentSort;
+    }
+  }
+}
+
 /**
  * Configure visible sort options based on current feed mode:
  * 1. Home (Following): Only 'best' and 'new' (matching Reddit's Following options)
@@ -877,67 +854,45 @@ function selectSubreddit(subName) {
  * 3. Creator Profile: 'new', 'hot', 'top'
  */
 function updateSortDropdownOptions() {
-  if (!sortDropdownMenu) return;
-
-  if (currentAuthor) {
-    // Creator profile mode
-    sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
-      const isSupported = ["new", "hot", "top"].includes(el.dataset.value);
-      el.style.display = isSupported ? "" : "none";
+  const allowed = allowedSorts();
+  const rows = feedSortMenu ? Array.from(feedSortMenu.querySelectorAll(".sort-row")) : [];
+  rows.forEach((el) => {
+    el.hidden = !allowed.includes(el.dataset.value);
+  });
+  if (feedSortMenu && timeOptions) {
+    allowed.forEach((value) => {
+      const el = rows.find((row) => row.dataset.value === value);
+      if (el) feedSortMenu.insertBefore(el, timeOptions);
     });
-    if (currentSort === "best" || currentSort === "rising") {
-      setSortSelection("new");
-    } else {
-      setSortSelection(currentSort);
-    }
-  } else if (currentSubreddit) {
-    // Subreddit feed mode
-    sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
-      const isSupported = ["hot", "top", "new", "rising"].includes(el.dataset.value);
-      el.style.display = isSupported ? "" : "none";
-    });
-    if (currentSort === "best") {
-      setSortSelection("hot");
-    } else {
-      setSortSelection(currentSort);
-    }
+  }
+  if (!allowed.includes(currentSort)) {
+    setSortSelection(allowed[0]);
   } else {
-    // Home feed (Following) mode: only Best and New!
-    sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
-      const isSupported = ["best", "new"].includes(el.dataset.value);
-      el.style.display = isSupported ? "" : "none";
-    });
-    if (currentSort !== "best" && currentSort !== "new") {
-      setSortSelection("best");
-    } else {
-      setSortSelection(currentSort);
-    }
+    setSortSelection(currentSort);
   }
 }
 
 function setSortSelection(sortValue) {
   currentSort = sortValue;
-  if (!sortDropdownMenu) return;
-
-  sortDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
-    const isTarget = el.dataset.value === sortValue;
-    el.classList.toggle("active", isTarget);
-    if (isTarget && sortSelectedText) {
-      sortSelectedText.textContent = el.textContent.trim();
-    }
+  feedSortMenu?.querySelectorAll(".sort-row").forEach((el) => {
+    el.classList.toggle("active", el.dataset.value === sortValue);
   });
+  if (timeOptions) timeOptions.hidden = sortValue !== "top";
+  paintPill();
+}
 
-  if (timeDropdown) {
-    timeDropdown.style.display = sortValue === "top" ? "inline-flex" : "none";
-  }
+function markTimeSelection(value) {
+  currentTime = value;
+  timeOptions?.querySelectorAll(".time-chip").forEach((el) => {
+    el.classList.toggle("active", el.dataset.value === value);
+  });
+  if (currentSort === "top") paintPill();
 }
 
 // Creator Profile Navigation
 function openAuthorProfile(author) {
   if (!author) return;
   const clean = author.replace(/^u\//i, "");
-
-  updateSubHeaderJoinButtonState("", false);
 
   if (!currentAuthor) {
     previousFeed = {
@@ -948,23 +903,19 @@ function openAuthorProfile(author) {
   }
 
   currentAuthor = clean;
-  if (creatorBanner && creatorBannerName) {
-    creatorBanner.style.display = "flex";
-    creatorBannerName.textContent = `u/${clean}`;
-    const isFollowed = isTargetJoined(clean, "user");
-    updateCreatorFollowButtonState(clean, isFollowed);
-    // Authoritatively verify follow status with Reddit API
-    checkUserSubscription(clean).then((verifiedFollowed) => {
-      if (currentAuthor.toLowerCase() === clean.toLowerCase()) {
-        updateCreatorFollowButtonState(clean, verifiedFollowed);
-      }
-    });
-  }
-  if (feedDropdown) {
-    feedDropdown.style.display = "none";
-  }
+  updateSubHeaderJoinButtonState("", false);
+  showCreatorMenuPanel();
+  if (creatorBannerName) creatorBannerName.textContent = `u/${clean}`;
+  const isFollowed = isTargetJoined(clean, "user");
+  updateCreatorFollowButtonState(clean, isFollowed);
+  checkUserSubscription(clean).then((verifiedFollowed) => {
+    if (currentAuthor.toLowerCase() === clean.toLowerCase()) {
+      updateCreatorFollowButtonState(clean, verifiedFollowed);
+    }
+  });
 
   updateSortDropdownOptions();
+  closeFeedSortMenu();
 
   hideError();
   feedController.loadInitialFeed({
@@ -976,14 +927,10 @@ function openAuthorProfile(author) {
 
 function closeAuthorProfile() {
   currentAuthor = "";
-  if (creatorBanner) {
-    creatorBanner.style.display = "none";
-  }
-  if (feedDropdown) {
-    feedDropdown.style.display = "inline-flex";
-  }
+  showFeedMenuPanel();
 
   currentSubreddit = previousFeed.subreddit;
+  markFeedShortcuts();
   if (currentSubreddit) {
     const isJoined = isTargetJoined(currentSubreddit, "sub");
     updateSubHeaderJoinButtonState(currentSubreddit, isJoined);
@@ -998,24 +945,13 @@ function closeAuthorProfile() {
   }
 
   updateSortDropdownOptions();
-  setSortSelection(previousFeed.sort);
-
-  if (timeDropdownMenu) {
-    timeDropdownMenu.querySelectorAll(".dropdown-item").forEach((el) => {
-      const isTarget = el.dataset.value === previousFeed.time;
-      el.classList.toggle("active", isTarget);
-      if (isTarget && timeSelectedText) {
-        timeSelectedText.textContent = el.textContent.trim();
-      }
-    });
+  if (allowedSorts().includes(previousFeed.sort)) {
+    setSortSelection(previousFeed.sort);
   }
-  currentTime = previousFeed.time;
-
-  if (feedSelectedText) {
-    feedSelectedText.textContent = currentSubreddit ? `r/${currentSubreddit}` : "Home (Your Feed)";
-  }
+  markTimeSelection(previousFeed.time);
 
   renderRecentSubreddits();
+  closeFeedSortMenu();
 
   hideError();
   feedController.loadInitialFeed({
@@ -1059,6 +995,34 @@ brandLogoBtn?.addEventListener("click", (e) => {
 });
 
 statusPopoverClose?.addEventListener("click", closeStatusPopover);
+
+moreSheetClose?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  closeMoreSheet();
+});
+
+moreCommentsBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const permalink = moreItem?.permalink;
+  if (permalink) {
+    window.open(permalink, "_blank", "noopener");
+  } else {
+    showToast("No comment thread for this post");
+  }
+  closeMoreSheet();
+});
+
+moreRefreshBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  closeMoreSheet();
+  feedController.refreshFeed();
+});
+
+moreStatusBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  closeMoreSheet();
+  openStatusPopover();
+});
 
 openLogsFromPopover?.addEventListener("click", () => {
   closeStatusPopover();
