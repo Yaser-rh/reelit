@@ -5,10 +5,10 @@ let HlsModule = null;
 async function getHls() {
   if (!HlsModule) {
     try {
-      const mod = await import('hls.js');
+      const mod = await import('hls.js/dist/hls.light.min.mjs');
       HlsModule = mod.default || mod;
     } catch (err) {
-      console.warn("Failed to dynamically load hls.js:", err);
+      console.warn("Failed to dynamically load hls.light:", err);
     }
   }
   return HlsModule;
@@ -340,11 +340,58 @@ export class FeedController {
     ));
   }
 
+  wakeCinema() {
+    clearTimeout(this._cinemaTimer);
+    const appEl = document.getElementById("app");
+    if (appEl?.classList.contains("cinema-mode")) {
+      appEl.classList.remove("cinema-mode");
+    }
+    const currentEl = this.renderedElements.get(this.currentIndex);
+    const video = currentEl?.querySelector("video");
+    if (video && !video.paused && !video.ended) {
+      this.scheduleCinemaHide();
+    }
+  }
+
+  scheduleCinemaHide() {
+    clearTimeout(this._cinemaTimer);
+    this._cinemaTimer = setTimeout(() => {
+      const currentEl = this.renderedElements.get(this.currentIndex);
+      const video = currentEl?.querySelector("video");
+      if (!video || video.paused || video.ended) return;
+
+      if (document.querySelector(".video-scrubber-container.scrubbing")) return;
+
+      const menu = document.getElementById("feed-sort-menu");
+      if (menu && !menu.hidden) return;
+
+      const sheet = document.getElementById("more-sheet");
+      if (sheet && !sheet.hidden) return;
+
+      const popover = document.getElementById("status-popover");
+      if (popover && popover.style.display !== "none" && popover.style.display) return;
+
+      const saveModal = document.getElementById("save-modal");
+      if (saveModal && saveModal.style.display !== "none" && saveModal.style.display) return;
+
+      const debug = document.getElementById("debug-panel");
+      if (debug?.classList.contains("open")) return;
+
+      document.getElementById("app")?.classList.add("cinema-mode");
+    }, 3500);
+  }
+
   setupFeedMotion() {
     const feed = this.container;
 
+    const wake = () => this.wakeCinema();
+    feed.addEventListener("pointerdown", wake, { passive: true });
+    window.addEventListener("mousemove", wake, { passive: true });
+    window.addEventListener("keydown", wake, { passive: true });
+
     feed.addEventListener("scroll", () => {
       this._feedScrolling = true;
+      this.wakeCinema();
       this.notePendingReel();
       if (this._touching) return;
       this.scheduleFeedSettle();
@@ -456,6 +503,7 @@ export class FeedController {
       }
     }
     element.classList.add("is-current");
+    this.wakeCinema();
     if (currentItem) this.updateItemBadge(element, currentItem);
 
     const activeVideo = element.querySelector(".gallery-container")
@@ -475,6 +523,24 @@ export class FeedController {
     this.renderedElements.forEach((el, idx) => {
       if (Math.abs(idx - index) > 1) {
         this.unmountVideo(idx);
+      }
+    });
+
+    // Deep memory recycling for distant reels (> 6 away): release heavy backdrop textures
+    this.renderedElements.forEach((el, idx) => {
+      const dist = Math.abs(idx - index);
+      const backdrop = el.querySelector(".item-backdrop");
+      if (!backdrop) return;
+      if (dist > 6) {
+        if (backdrop.style.backgroundImage && backdrop.style.backgroundImage !== "none") {
+          backdrop.dataset.cachedBg = backdrop.style.backgroundImage;
+          backdrop.style.backgroundImage = "none";
+        }
+      } else if (dist <= 3) {
+        if (backdrop.dataset.cachedBg) {
+          backdrop.style.backgroundImage = backdrop.dataset.cachedBg;
+          delete backdrop.dataset.cachedBg;
+        }
       }
     });
 
@@ -633,6 +699,7 @@ export class FeedController {
         if (stillCurrent()) {
           video._hls.startLoad();
           video.play().catch(() => {});
+          this.scheduleCinemaHide();
         }
         return;
       }
@@ -680,6 +747,7 @@ export class FeedController {
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           if (video._hlsGen !== gen || !stillCurrent()) return;
           const playPromise = video.play();
+          this.scheduleCinemaHide();
           if (playPromise !== undefined) {
             playPromise.catch(() => {
               if (!stillCurrent() || this.isMuted) return;
@@ -697,7 +765,10 @@ export class FeedController {
           if (video._hls === hls) video._hls = null;
           if (item.videoUrl && stillCurrent() && this.assignDirectMp4(video, item)) {
             video.play().then(() => {
-              if (stillCurrent()) this.syncSidecar(video, audio);
+              if (stillCurrent()) {
+                this.syncSidecar(video, audio);
+                this.scheduleCinemaHide();
+              }
             }).catch(() => {});
           }
         });
@@ -734,6 +805,7 @@ export class FeedController {
 
     // Sidecar audio only for a direct MP4. A playlist already carries the audio.
     this.syncSidecar(video, audio);
+    this.scheduleCinemaHide();
   }
 
   applyAutoplayMute(element) {
@@ -753,6 +825,7 @@ export class FeedController {
 
   pauseMedia(element, { cancelLoad = false } = {}) {
     if (!element) return;
+    this.wakeCinema();
 
     if (element.querySelector(".gallery-container")) {
       this.syncGallery(element, false);

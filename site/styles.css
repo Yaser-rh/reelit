@@ -1208,9 +1208,11 @@ html, body {
   justify-content: center;
   background: radial-gradient(circle at center, #16161c 0%, #000000 100%);
   contain: layout paint;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 100dvh;
 }
 
-/* Ambient Backdrop - Lightweight GPU accelerated backdrop */
+/* Ambient Backdrop - Lightweight GPU accelerated backdrop (only active reel promoted) */
 .item-backdrop {
   position: absolute;
   top: 0;
@@ -1220,11 +1222,13 @@ html, body {
   background-size: cover;
   background-position: center;
   opacity: 0.22;
-  filter: blur(8px);
-  transform: translateZ(0);
-  will-change: transform;
   z-index: 1;
   pointer-events: none;
+}
+
+.feed-item.is-current .item-backdrop {
+  filter: blur(8px);
+  transform: translateZ(0);
 }
 
 /* Sound Icon State Classes Driven by Feed Viewport Root */
@@ -2277,5 +2281,21 @@ html, body {
     width: 34px;
     height: 34px;
   }
+}
+
+/* Cinema Mode (Auto-Hide Chrome / HUD for pure viewing immersion) */
+.top-nav,
+.item-info-overlay,
+.action-column,
+.video-scrubber-container {
+  transition: opacity 0.35s ease;
+}
+
+#app.cinema-mode .top-nav,
+#app.cinema-mode .item-info-overlay,
+#app.cinema-mode .action-column,
+#app.cinema-mode .video-scrubber-container {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 

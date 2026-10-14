@@ -232,6 +232,43 @@ const saveRedditHeading = document.getElementById("save-reddit-btn-heading");
 const saveRedditSub = document.getElementById("save-reddit-btn-sub");
 const saveDownloadSub = document.getElementById("save-download-sub");
 
+// Overlay History Navigation Stack (Android Hardware / Gesture Back Button Guard)
+const overlayStack = [];
+let isPoppingOverlay = false;
+
+function pushOverlay(name, closeFn) {
+  if (overlayStack.length > 0 && overlayStack[overlayStack.length - 1].name === name) return;
+  overlayStack.push({ name, close: closeFn });
+  try {
+    history.pushState({ reelitOverlay: name }, "");
+  } catch (_) {}
+}
+
+function dismissOverlay(name) {
+  if (isPoppingOverlay) return;
+  const idx = overlayStack.findLastIndex((item) => item.name === name);
+  if (idx !== -1) {
+    overlayStack.splice(idx, 1);
+    if (history.state?.reelitOverlay === name) {
+      try {
+        history.back();
+      } catch (_) {}
+    }
+  }
+}
+
+window.addEventListener("popstate", () => {
+  if (overlayStack.length > 0) {
+    isPoppingOverlay = true;
+    const top = overlayStack.pop();
+    try {
+      top.close();
+    } finally {
+      isPoppingOverlay = false;
+    }
+  }
+});
+
 let currentSaveItem = null;
 let currentSaveElement = null;
 
@@ -266,6 +303,7 @@ function openSaveModal(item, element) {
 
   if (saveModal) {
     saveModal.style.display = "flex";
+    pushOverlay("saveModal", closeSaveModal);
   }
 }
 
@@ -273,6 +311,7 @@ function closeSaveModal() {
   if (saveModal) saveModal.style.display = "none";
   currentSaveItem = null;
   currentSaveElement = null;
+  dismissOverlay("saveModal");
 }
 
 saveModalClose?.addEventListener("click", closeSaveModal);
@@ -419,6 +458,7 @@ function closeFeedSortMenu() {
   feedSortMenu.hidden = true;
   feedSortBtn?.classList.remove("open");
   feedSortBtn?.setAttribute("aria-expanded", "false");
+  dismissOverlay("feedSortMenu");
 }
 
 function openFeedSortMenu() {
@@ -428,6 +468,7 @@ function openFeedSortMenu() {
   feedSortMenu.hidden = false;
   feedSortBtn?.classList.add("open");
   feedSortBtn?.setAttribute("aria-expanded", "true");
+  pushOverlay("feedSortMenu", closeFeedSortMenu);
 }
 
 function toggleFeedSortMenu() {
@@ -441,6 +482,7 @@ function closeAllDropdowns() {
 
 function closeStatusPopover() {
   if (statusPopover) statusPopover.style.display = "none";
+  dismissOverlay("statusPopover");
 }
 
 function openStatusPopover() {
@@ -449,6 +491,7 @@ function openStatusPopover() {
   closeMoreSheet();
   updatePopoverStats();
   statusPopover.style.display = "flex";
+  pushOverlay("statusPopover", closeStatusPopover);
 }
 
 function toggleStatusPopover() {
@@ -456,7 +499,7 @@ function toggleStatusPopover() {
   if (statusPopover.style.display === "none" || !statusPopover.style.display) {
     openStatusPopover();
   } else {
-    statusPopover.style.display = "none";
+    closeStatusPopover();
   }
 }
 
@@ -469,11 +512,13 @@ function openMoreSheet(item) {
     moreCommentsCount.textContent = item.commentsFormatted || "0";
   }
   moreSheet.hidden = false;
+  pushOverlay("moreSheet", closeMoreSheet);
 }
 
 function closeMoreSheet() {
   if (moreSheet) moreSheet.hidden = true;
   moreItem = null;
+  dismissOverlay("moreSheet");
 }
 
 function toggleDebugPanel() {
@@ -482,12 +527,16 @@ function toggleDebugPanel() {
   debugPanel.classList.toggle("open");
   if (willOpen) {
     renderDebugLogs();
+    pushOverlay("debugPanel", closeDebugPanel);
+  } else {
+    dismissOverlay("debugPanel");
   }
 }
 
 function closeDebugPanel() {
   if (!debugPanel) return;
   debugPanel.classList.remove("open");
+  dismissOverlay("debugPanel");
 }
 
 // Outside click closes the menu, the status popover, and the More sheet.
@@ -916,6 +965,7 @@ function openAuthorProfile(author) {
 
   updateSortDropdownOptions();
   closeFeedSortMenu();
+  pushOverlay("creatorProfile", closeAuthorProfile);
 
   hideError();
   feedController.loadInitialFeed({
@@ -927,6 +977,7 @@ function openAuthorProfile(author) {
 
 function closeAuthorProfile() {
   currentAuthor = "";
+  dismissOverlay("creatorProfile");
   showFeedMenuPanel();
 
   currentSubreddit = previousFeed.subreddit;
