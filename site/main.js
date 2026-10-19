@@ -78,6 +78,8 @@ let currentSort = "best";
 let currentTime = "day";
 let currentAuthor = "";
 let previousFeed = { subreddit: "", sort: "best", time: "day" };
+const feedStack = [];
+let isRestoringFromProfile = false;
 let currentSessionInfo = null;
 let moreItem = null;
 
@@ -233,39 +235,53 @@ const saveRedditSub = document.getElementById("save-reddit-btn-sub");
 const saveDownloadSub = document.getElementById("save-download-sub");
 
 // Overlay History Navigation Stack (Android Hardware / Gesture Back Button Guard)
+let overlayDepth = 0;
 const overlayStack = [];
 let isPoppingOverlay = false;
 
 function pushOverlay(name, closeFn) {
   if (overlayStack.length > 0 && overlayStack[overlayStack.length - 1].name === name) return;
-  overlayStack.push({ name, close: closeFn });
+  overlayDepth++;
+  overlayStack.push({ name, close: closeFn, depth: overlayDepth });
   try {
-    history.pushState({ reelitOverlay: name }, "");
+    history.pushState({ reelitOverlay: name, depth: overlayDepth }, "");
   } catch (_) {}
 }
 
 function dismissOverlay(name) {
   if (isPoppingOverlay) return;
   const idx = overlayStack.findLastIndex((item) => item.name === name);
-  if (idx !== -1) {
-    overlayStack.splice(idx, 1);
-    if (history.state?.reelitOverlay === name) {
-      try {
-        history.back();
-      } catch (_) {}
+  if (idx === -1) return;
+  const entry = overlayStack[idx];
+
+  // If this overlay is at or above the current history depth, step back
+  if (history.state?.depth && history.state.depth >= entry.depth) {
+    const stepsBack = history.state.depth - entry.depth + 1;
+    try {
+      history.go(-stepsBack);
+    } catch (_) {
+      overlayStack.splice(idx, overlayStack.length - idx);
     }
+  } else {
+    overlayStack.splice(idx, 1);
   }
 }
 
-window.addEventListener("popstate", () => {
-  if (overlayStack.length > 0) {
-    isPoppingOverlay = true;
-    const top = overlayStack.pop();
-    try {
-      top.close();
-    } finally {
-      isPoppingOverlay = false;
+window.addEventListener("popstate", (e) => {
+  if (overlayStack.length === 0) return;
+  const targetDepth = e.state?.depth || 0;
+  isPoppingOverlay = true;
+  try {
+    while (overlayStack.length > 0 && overlayStack[overlayStack.length - 1].depth > targetDepth) {
+      const top = overlayStack.pop();
+      try {
+        top.close();
+      } catch (err) {
+        console.warn("Error closing overlay on popstate:", err);
+      }
     }
+  } finally {
+    isPoppingOverlay = false;
   }
 });
 
@@ -844,6 +860,8 @@ function selectSubreddit(subName) {
   const clean = (subName || "").trim().replace(/^r\//i, "");
   currentSubreddit = clean;
   currentAuthor = "";
+  feedStack.length = 0;
+  dismissOverlay("creatorProfile");
 
   showFeedMenuPanel();
   markFeedShortcuts();
@@ -943,13 +961,14 @@ function openAuthorProfile(author) {
   if (!author) return;
   const clean = author.replace(/^u\//i, "");
 
-  if (!currentAuthor) {
-    previousFeed = {
-      subreddit: currentSubreddit,
-      sort: currentSort,
-      time: currentTime
-    };
-  }
+  // Snapshot current feed state before navigating to creator profile
+  feedStack.push({
+    author: currentAuthor,
+    subreddit: currentSubreddit,
+    sort: currentSort,
+    time: currentTime,
+    feedState: feedController.saveFeedState()
+  });
 
   currentAuthor = clean;
   updateSubHeaderJoinButtonState("", false);
@@ -976,40 +995,69 @@ function openAuthorProfile(author) {
 }
 
 function closeAuthorProfile() {
+  if (isRestoringFromProfile) return;
+  if (!currentAuthor && feedStack.length === 0) return;
+
+  isRestoringFromProfile = true;
   currentAuthor = "";
   dismissOverlay("creatorProfile");
-  showFeedMenuPanel();
 
-  currentSubreddit = previousFeed.subreddit;
-  markFeedShortcuts();
-  if (currentSubreddit) {
-    const isJoined = isTargetJoined(currentSubreddit, "sub");
-    updateSubHeaderJoinButtonState(currentSubreddit, isJoined);
-    checkSubredditSubscription(currentSubreddit).then((verifiedJoined) => {
-      if (currentSubreddit.toLowerCase() === previousFeed.subreddit.toLowerCase()) {
-        updateSubHeaderJoinButtonState(currentSubreddit, verifiedJoined);
-        feedController.updateTargetButtons(currentSubreddit, "sub", verifiedJoined);
+  const prev = feedStack.pop();
+  if (prev) {
+    currentAuthor = prev.author || "";
+    currentSubreddit = prev.subreddit || "";
+    currentSort = prev.sort || "best";
+    currentTime = prev.time || "day";
+
+    if (currentAuthor) {
+      showCreatorMenuPanel();
+      if (creatorBannerName) creatorBannerName.textContent = `u/${currentAuthor}`;
+      const isFollowed = isTargetJoined(currentAuthor, "user");
+      updateCreatorFollowButtonState(currentAuthor, isFollowed);
+    } else {
+      showFeedMenuPanel();
+      markFeedShortcuts();
+      if (currentSubreddit) {
+        const isJoined = isTargetJoined(currentSubreddit, "sub");
+        updateSubHeaderJoinButtonState(currentSubreddit, isJoined);
+        checkSubredditSubscription(currentSubreddit).then((verifiedJoined) => {
+          if (currentSubreddit.toLowerCase() === (prev.subreddit || "").toLowerCase()) {
+            updateSubHeaderJoinButtonState(currentSubreddit, verifiedJoined);
+            feedController.updateTargetButtons(currentSubreddit, "sub", verifiedJoined);
+          }
+        });
+      } else {
+        updateSubHeaderJoinButtonState("", false);
       }
-    });
-  } else {
-    updateSubHeaderJoinButtonState("", false);
+    }
+
+    updateSortDropdownOptions();
+    if (allowedSorts().includes(currentSort)) {
+      setSortSelection(currentSort);
+    }
+    markTimeSelection(currentTime);
+
+    renderRecentSubreddits();
+    closeFeedSortMenu();
+    hideError();
+
+    if (prev.feedState && Array.isArray(prev.feedState.items) && prev.feedState.items.length > 0) {
+      feedController.restoreFeedState(prev.feedState);
+    } else {
+      loadFeedNow();
+    }
+    isRestoringFromProfile = false;
+    return;
   }
 
+  showFeedMenuPanel();
+  markFeedShortcuts();
   updateSortDropdownOptions();
-  if (allowedSorts().includes(previousFeed.sort)) {
-    setSortSelection(previousFeed.sort);
-  }
-  markTimeSelection(previousFeed.time);
-
   renderRecentSubreddits();
   closeFeedSortMenu();
-
   hideError();
-  feedController.loadInitialFeed({
-    subreddit: currentSubreddit,
-    sort: currentSort,
-    timeFilter: currentTime
-  });
+  loadFeedNow();
+  isRestoringFromProfile = false;
 }
 
 creatorBackBtn?.addEventListener("click", closeAuthorProfile);

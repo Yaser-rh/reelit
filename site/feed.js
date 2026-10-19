@@ -1327,7 +1327,7 @@ export class FeedController {
     }
   }
 
-  appendItem(item) {
+  appendItem(item, options = {}) {
     const index = this.items.length;
     this.items.push(item);
 
@@ -1498,8 +1498,8 @@ export class FeedController {
     this.renderedElements.set(index, el);
     this.observer.observe(el);
 
-    // If this is the very first reel appended, play it!
-    if (index === 0) {
+    // If this is the very first reel appended, play it! (unless restoring feed state)
+    if (index === 0 && !options.isRestore) {
       setTimeout(() => {
         if (this.currentIndex > 0 || this.indexFromScroll() > 0) return;
         this.handleItemVisible(0, el);
@@ -2042,6 +2042,87 @@ export class FeedController {
       sort: this.sort,
       timeFilter: this.timeFilter
     });
+  }
+
+  saveFeedState() {
+    const idx = this.currentIndex >= 0 ? this.currentIndex : this.indexFromScroll();
+    return {
+      subreddit: this.subreddit,
+      user: this.user,
+      sort: this.sort,
+      timeFilter: this.timeFilter,
+      items: this.items.map((it) => ({ ...it })),
+      currentIndex: Math.max(0, Math.min(this.items.length - 1, idx >= 0 ? idx : 0)),
+      after: this.after,
+      hasMore: this.hasMore
+    };
+  }
+
+  restoreFeedState(state) {
+    if (!state || !Array.isArray(state.items)) return;
+    this._feedGen = (this._feedGen || 0) + 1;
+    const gen = this._feedGen;
+
+    this.killMomentum(this.container);
+    clearTimeout(this._scrollEndTimer);
+    clearTimeout(this._cinemaTimer);
+
+    // Unmount and clean up current reels
+    this.renderedElements.forEach((el, idx) => {
+      this.observer.unobserve(el);
+      this.unmountVideo(idx);
+    });
+    this.renderedElements.clear();
+    this.items = [];
+    this.container.innerHTML = "";
+    const headerBadge = document.getElementById("media-source-badge");
+    if (headerBadge) headerBadge.textContent = "";
+
+    this.currentIndex = -1;
+    this._pendingIndex = -1;
+    this._feedScrolling = false;
+    this._touching = false;
+    this._touch = null;
+    this._paging = false;
+
+    // Restore feed parameters and pagination state
+    this.subreddit = state.subreddit || "";
+    this.user = state.user || "";
+    this.sort = state.sort || (this.user ? "new" : (this.subreddit ? "hot" : "best"));
+    this.timeFilter = state.timeFilter || "day";
+    this.after = state.after || null;
+    this.hasMore = state.hasMore !== false;
+    this.isLoading = false;
+
+    // Target reel index to restore to
+    const targetIndex = Math.max(0, Math.min(state.items.length - 1, state.currentIndex >= 0 ? state.currentIndex : 0));
+
+    // Append all previous items without auto-playing index 0
+    for (const item of state.items) {
+      this.appendItem(item, { isRestore: true });
+    }
+
+    if (this.items.length > 0) {
+      this.onStatusUpdate({ clearError: true });
+    }
+
+    // Immediately position viewport on the target reel and resume playback
+    const targetEl = this.renderedElements.get(targetIndex);
+    if (targetEl) {
+      this.container.style.scrollSnapType = "none";
+      this.container.scrollTop = targetEl.offsetTop;
+
+      // Settle scroll position and resume playback on next animation frame
+      requestAnimationFrame(() => {
+        if (this._feedGen !== gen) return;
+        this.container.scrollTop = targetEl.offsetTop;
+        this.container.style.scrollSnapType = "";
+        this.handleItemVisible(targetIndex, targetEl);
+      });
+    } else if (this.items.length > 0) {
+      const firstEl = this.renderedElements.get(0);
+      if (firstEl) this.handleItemVisible(0, firstEl);
+    }
   }
 
   updateTargetButtons(target, type, joined) {
